@@ -1,5 +1,7 @@
 #include "gamepad.h"
 #include "esp_log.h"
+#include "esp_hid_common.h"
+#include "esp_hidh.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include <stdlib.h>
@@ -69,9 +71,13 @@ static const gp_profile_t *lookup_profile(uint16_t vid, uint16_t pid);
 /* ── create / destroy ─────────────────────────────────────────────── */
 
 gamepad_t *gamepad_create(const hid_field_map_t *map,
-                           uint16_t vid, uint16_t pid,
-                           gp_event_cb_t cb, void *user_data)
+                          esp_hidh_dev_t *dev,
+                          gp_event_cb_t cb, void *user_data)
 {
+
+    uint16_t vid = esp_hidh_dev_vendor_id_get(dev);
+    uint16_t pid = esp_hidh_dev_product_id_get(dev);
+    
     /* Search INPUT reports for button fields (usage page 0x09). */
     for (int r = 0; r < map->num_reports; r++) {
         const hid_report_desc_t *rd = &map->reports[r];
@@ -217,8 +223,9 @@ void gamepad_set_profile(gamepad_t *gp, const gp_profile_t *profile)
 /* ── process report ───────────────────────────────────────────────── */
 
 void gamepad_process_report(gamepad_t *gp,
-                             uint8_t report_id,
-                             const uint8_t *data, uint16_t len)
+                            esp_hidh_dev_t *dev,
+                            uint8_t report_id,
+                            const uint8_t *data, uint16_t len)
 {
     if (!gp || report_id != gp->report_id) return;
 

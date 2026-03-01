@@ -110,7 +110,8 @@ static void setup_decoder(connected_dev_t *cdev, esp_hidh_dev_t *dev)
 
     /* Try keyboard first, then gamepad */
     keyboard_t *kb = keyboard_create(&cdev->field_map,
-                                      s_kb_cb, s_kb_user_data);
+                                     dev,
+                                     s_kb_cb, s_kb_user_data);
     if (kb) {
         cdev->type = DEV_TYPE_KEYBOARD;
         cdev->decoder.keyboard = kb;
@@ -118,9 +119,7 @@ static void setup_decoder(connected_dev_t *cdev, esp_hidh_dev_t *dev)
         return;
     }
 
-    gamepad_t *gp = gamepad_create(&cdev->field_map,
-                                   esp_hidh_dev_vendor_id_get(dev),
-                                   esp_hidh_dev_product_id_get(dev),
+    gamepad_t *gp = gamepad_create(&cdev->field_map, dev,
                                    s_gp_cb, s_gp_user_data);
     if (gp) {
         cdev->type = DEV_TYPE_GAMEPAD;
@@ -178,12 +177,12 @@ static void hidh_event_handler(void *arg, esp_event_base_t base,
         if (cdev) {
             switch (cdev->type) {
             case DEV_TYPE_KEYBOARD:
-                keyboard_process_report(cdev->decoder.keyboard,
+                keyboard_process_report(cdev->decoder.keyboard, p->input.dev,
                                          p->input.report_id,
                                          p->input.data, p->input.length);
                 break;
             case DEV_TYPE_GAMEPAD:
-                gamepad_process_report(cdev->decoder.gamepad,
+                gamepad_process_report(cdev->decoder.gamepad, p->input.dev,
                                        p->input.report_id,
                                        p->input.data, p->input.length);
                 break;

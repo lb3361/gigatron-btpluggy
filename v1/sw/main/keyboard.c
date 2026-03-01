@@ -1,7 +1,13 @@
 #include "keyboard.h"
 #include "esp_log.h"
+#include "esp_hid_common.h"
+#include "esp_hidh.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include <stdlib.h>
 #include <string.h>
+
+#include <keymap.h>
 
 static const char *TAG = "KB";
 
@@ -19,11 +25,19 @@ struct keyboard_s {
     uint8_t  key_bit_size;
     uint8_t  key_count;
 
+    /* led field (variable, 1 bit x 8, usage page 0x08) */
+    int16_t  led_report_id;
+    uint16_t capslock_bit_offset;
+
     /* state */
     uint8_t  prev_modifiers;
     uint8_t  prev_keys[KB_MAX_KEYS];
     uint8_t  curr_keys[KB_MAX_KEYS];
     uint8_t  curr_key_count;
+
+    /* keymap state */
+    uint8_t  keymap;
+    uint8_t  capslock;
 
     /* callback */
     kb_event_cb_t cb;
@@ -39,11 +53,23 @@ static bool key_in_array(uint8_t key, const uint8_t *arr, int count)
     return false;
 }
 
+static void set_led(keyboard_t *kb, esp_hidh_dev_t *dev, bool capslock)
+{
+    if (kb && kb->led_report_id >= 0) {
+        uint8_t report = (capslock) ? (1 << kb->capslock_bit_offset) : 0;
+        esp_hidh_dev_output_set(dev, 0, kb->led_report_id, &report, 1);
+    }
+}
+
+
 /* ── create / destroy ─────────────────────────────────────────────── */
 
 keyboard_t *keyboard_create(const hid_field_map_t *map,
-                             kb_event_cb_t cb, void *user_data)
+                            esp_hidh_dev_t *dev,
+                            kb_event_cb_t cb, void *user_data)
 {
+    keyboard_t *kb = 0;
+    
     /* Search INPUT reports for keyboard fields (usage page 0x07). */
     for (int r = 0; r < map->num_reports; r++) {
         const hid_report_desc_t *rd = &map->reports[r];
@@ -55,21 +81,18 @@ keyboard_t *keyboard_create(const hid_field_map_t *map,
             const hid_field_t *fl = &rd->fields[f];
             if (fl->usage_page != 0x07)  continue;
             if (fl->flags & HID_FLAG_CONSTANT) continue;
-
             if ((fl->flags & HID_FLAG_VARIABLE) &&
-                ((fl->usage >= 0xE0 && fl->usage <= 0xE7) ||
-                 (fl->usage <= 0xE0 && fl->usage_max >= 0xE7))) {
+                (fl->usage == 0xE0 && fl->bit_size == 1 && fl->count >= 8) )
                 mod_idx = f;
-            } else if (!(fl->flags & HID_FLAG_VARIABLE)) {
-                /* Array type → key-code array */
+            else if (!(fl->flags & HID_FLAG_VARIABLE) &&
+                     (fl->usage == 0x00) )
                 key_idx = f;
-            }
         }
 
         if (mod_idx >= 0 && key_idx >= 0) {
-            keyboard_t *kb = calloc(1, sizeof(keyboard_t));
+            kb = calloc(1, sizeof(keyboard_t));
             if (!kb) return NULL;
-
+            kb->led_report_id  = -1;
             kb->report_id      = rd->report_id;
             kb->mod_bit_offset = rd->fields[mod_idx].bit_offset;
             kb->key_bit_offset = rd->fields[key_idx].bit_offset;
@@ -84,11 +107,34 @@ keyboard_t *keyboard_create(const hid_field_map_t *map,
                      "mod@bit%d  keys@bit%d ×%d",
                      kb->report_id, kb->mod_bit_offset,
                      kb->key_bit_offset, kb->key_count);
-            return kb;
+            break;
         }
     }
 
-    return NULL;
+    /* Search OUTPUT reports for leds */
+    if (kb == NULL)
+        return 0;
+    for (int r = 0; r < map->num_reports; r++) {
+        const hid_report_desc_t *rd = &map->reports[r];
+        if (rd->type != 2) continue;             /* OUTPUT only */
+        if (rd->total_bits != 8) continue;       /* one byte only */
+        for (int f = 0; f < rd->num_fields; f++) {
+            const hid_field_t *fl = &rd->fields[f];
+            if (fl->usage_page != 0x08)  continue;
+            if (fl->bit_size != 1) continue;
+            if (fl->usage <= 0x2 && fl->usage_max >= 0x2) {
+                kb->led_report_id = rd->report_id;
+                kb->capslock_bit_offset = fl->bit_offset + 0x2 - fl->usage;
+                break;
+            }
+        }
+    }
+
+    /* Clear Leds (including caps_lock) */
+    if (kb && kb->led_report_id >= 0)
+        set_led(kb, dev, 0);
+
+    return kb;
 }
 
 void keyboard_destroy(keyboard_t *kb)
@@ -96,11 +142,105 @@ void keyboard_destroy(keyboard_t *kb)
     free(kb);
 }
 
+
+/* ── keymaps ───────────────────────────────────────────────── */
+
+static int lookup(uint8_t mods, uint8_t code)
+{
+    ESP_LOGD(TAG, "Keymap-to-ascii %02x %02x", mods, code);
+    for (int i=0; i<sizeof(keymaps)/sizeof(keymaps[0]); i++) {
+        const keyTuple_t *t = &keymaps[i];
+        uint8_t f = t->flags;
+        if (code == t->code)
+            if (mods & t->flags & KMAPS) {
+                f |= KMAPS;
+                if (f == (EVERY|KMAPS) || f == (mods|KMAPS))
+                    return t->ascii;
+            }
+    }
+    return -1;
+}
+
+
+void process_giga_keys(keyboard_t *kb,
+                       esp_hidh_dev_t *dev,
+                       kb_event_t *ev)
+{
+    ev->giga_buttons = 0xff;
+    ev->giga_key = 0xff;
+
+    /* caps lock */
+    if (ev->type == KB_KEY_DOWN && ev->scancode == 0x39) {
+        kb->capslock = ! kb->capslock;
+        set_led(kb, dev, kb->capslock);
+    }
+    
+    /* mods */
+    int  ascii = -1;
+    bool shift = (ev->modifiers & 0x22) != 0;
+    bool altgr = (ev->modifiers & 0x40) != 0;
+    bool ctrl =  (ev->modifiers & 0x11) != 0;
+    bool alt =   (ev->modifiers & 0x44) != 0;
+    uint8_t mods = (1 << kb->keymap);
+    if (kb->capslock && (kb->keymap == 2 || kb->keymap == 3))
+        shift = true;
+    if (altgr)
+        ascii = lookup(mods+ALTGR, ev->scancode);
+    if (shift)
+        mods += SHIFT;
+    if (ascii < 0)
+        ascii = lookup(mods, ev->scancode);
+    
+    /* ctrl */
+    if (ascii >= 0) {
+        if (ctrl && alt && ascii >= 193 && ascii <= 204) { // CTRL+ALT+Fn
+            // switch keymap
+            if (ascii < 193 + nrKeymaps)
+                kb->keymap = ascii - 193;
+            ascii = -1;
+        } else {
+            if (kb->capslock && ascii >= 'a' && ascii <= 'z')
+                ascii += 'A' - 'a';
+            else if (ctrl) {
+                if (ascii == '?')
+                    ascii = 127;
+                else if (ascii == '6' || ascii == '^' || ascii == ' ')
+                    ascii = 0;
+                else if ((ascii|0x20) >= 'a' && (ascii|0x20) <= 'z')
+                    ascii &= 31;
+            }
+        }
+    }
+    if (ascii >= 0) 
+        ev->giga_key = (uint8_t)ascii;
+    
+    /* buttons */
+    uint8_t btns = 0;
+    for (int i=0; i<kb->curr_key_count; i++) {
+        uint8_t scan = kb->curr_keys[i];
+        for (int j=0; j<sizeof(keybtns)/sizeof(keybtns[0]); j++)
+            if (scan == keybtns[j].code)
+                btns |= keybtns[j].btn;
+            else if (scan == 0x4C)
+                btns |= (ctrl && alt) ? 16 : 128;
+    }
+    if (btns) {
+        ev->giga_buttons = btns ^ 0xff;
+        ev->giga_key = 0xff;
+    }
+    /* Callback */
+    if (kb->cb)
+        kb->cb(ev, kb->user_data);
+}
+                             
+
 /* ── process report ───────────────────────────────────────────────── */
 
+
 void keyboard_process_report(keyboard_t *kb,
-                              uint8_t report_id,
-                              const uint8_t *data, uint16_t len)
+                             esp_hidh_dev_t *dev,
+                             uint8_t report_id,
+                             const uint8_t *data, uint16_t len)
 {
     if (!kb || report_id != kb->report_id) return;
 
@@ -120,8 +260,6 @@ void keyboard_process_report(keyboard_t *kb,
             kb->curr_keys[kb->curr_key_count++] = code;
     }
 
-    if (!kb->cb) goto save;
-
     /* Modifier changes → emit events for each changed bit */
     uint8_t mod_diff = modifiers ^ kb->prev_modifiers;
     for (int i = 0; i < 8; i++) {
@@ -131,7 +269,7 @@ void keyboard_process_report(keyboard_t *kb,
             .scancode  = 0xE0 + i,
             .modifiers = modifiers,
         };
-        kb->cb(&ev, kb->user_data);
+        process_giga_keys(kb, dev, &ev);
     }
 
     /* Released keys: in prev but not in curr */
@@ -144,7 +282,7 @@ void keyboard_process_report(keyboard_t *kb,
                 .scancode  = k,
                 .modifiers = modifiers,
             };
-            kb->cb(&ev, kb->user_data);
+            process_giga_keys(kb, dev, &ev);
         }
     }
 
@@ -157,11 +295,11 @@ void keyboard_process_report(keyboard_t *kb,
                 .scancode  = k,
                 .modifiers = modifiers,
             };
-            kb->cb(&ev, kb->user_data);
+            process_giga_keys(kb, dev, &ev);
         }
     }
+    
 
-save:
     kb->prev_modifiers = modifiers;
     memset(kb->prev_keys, 0, sizeof(kb->prev_keys));
     memcpy(kb->prev_keys, kb->curr_keys, kb->curr_key_count);
@@ -183,3 +321,14 @@ const uint8_t *keyboard_get_pressed_keys(const keyboard_t *kb, int *count)
     *count = n;
     return kb->prev_keys;
 }
+
+
+/* ── NVS keymap ─────────────────────────────────────────── */
+
+
+
+/* Local Variables: */
+/* mode: c */
+/* c-basic-offset: 4 */
+/* indent-tabs-mode: () */
+/* End: */

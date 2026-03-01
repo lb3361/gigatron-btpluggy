@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+struct esp_hidh_dev_s;
+
 /* ── named buttons ────────────────────────────────────────────────── */
 
 typedef enum {
@@ -60,8 +62,8 @@ typedef void (*gp_event_cb_t)(const gp_state_t *state, void *user_data);
  * vid/pid are used to auto-select a button profile.
  * Returns NULL if the map contains no gamepad report. */
 gamepad_t *gamepad_create(const hid_field_map_t *map,
-                           uint16_t vid, uint16_t pid,
-                           gp_event_cb_t cb, void *user_data);
+                          struct esp_hidh_dev_s *dev,
+                          gp_event_cb_t cb, void *user_data);
 
 void gamepad_destroy(gamepad_t *gp);
 
@@ -70,8 +72,9 @@ void gamepad_set_profile(gamepad_t *gp, const gp_profile_t *profile);
 
 /* Feed a raw HID INPUT report. */
 void gamepad_process_report(gamepad_t *gp,
-                             uint8_t report_id,
-                             const uint8_t *data, uint16_t len);
+                            struct esp_hidh_dev_s *dev,
+                            uint8_t report_id,
+                            const uint8_t *data, uint16_t len);
 
 /* Query current state (valid until next process_report). */
 const gp_state_t *gamepad_get_state(const gamepad_t *gp);

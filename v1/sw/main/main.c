@@ -51,9 +51,11 @@ static void hid_report_cb(const hid_report_t *report)
 
 static void kb_event_handler(const kb_event_t *ev, void *user_data)
 {
-    ESP_LOGI(TAG, "KB: %s scancode=0x%02x mod=0x%02x",
+    int c = ev->giga_key;
+    if (c < ' ' || c >= 0x7f) { c = ' '; }
+    ESP_LOGI(TAG, "KB: %s scancode=0x%02x mod=0x%02x g-btn=0x%02x g-key=0x%02x (%c)",
              ev->type == KB_KEY_DOWN ? "DOWN" : "UP",
-             ev->scancode, ev->modifiers);
+             ev->scancode, ev->modifiers, ev->giga_buttons, ev->giga_key, c);
 }
 
 static void gp_event_handler(const gp_state_t *st, void *user_data)
