@@ -1,9 +1,10 @@
 #include "keyboard.h"
+#include "save.h"
+
 #include "esp_log.h"
 #include "esp_hid_common.h"
 #include "esp_hidh.h"
-#include "nvs_flash.h"
-#include "nvs.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -102,6 +103,16 @@ keyboard_t *keyboard_create(const hid_field_map_t *map,
                 kb->key_count = KB_MAX_KEYS;
             kb->cb        = cb;
             kb->user_data = user_data;
+            
+            /* load saved keymap */
+            const uint8_t *bda = esp_hidh_dev_bda_get(dev);
+            if (bda) {
+                uint8_t keymap;
+                if (nvs_load("KB", bda, &keymap, 1) == ESP_OK) {
+                    ESP_LOGI(TAG, "Setting saved keymap %d", keymap);
+                    kb->keymap = keymap;
+                }
+            }
 
             ESP_LOGI(TAG, "Keyboard decoder: report_id=%d "
                      "mod@bit%d  keys@bit%d ×%d",
@@ -195,8 +206,13 @@ void process_giga_keys(keyboard_t *kb,
     if (ascii >= 0) {
         if (ctrl && alt && ascii >= 193 && ascii <= 204) { // CTRL+ALT+Fn
             // switch keymap
-            if (ascii < 193 + nrKeymaps)
+            if (ascii < 193 + nrKeymaps) {
                 kb->keymap = ascii - 193;
+                const uint8_t *bda = esp_hidh_dev_bda_get(dev);
+                ESP_LOGI(TAG, "Switch to keymap %d", kb->keymap);
+                if (bda)
+                    nvs_save("KB", bda, &kb->keymap, 1);
+            }
             ascii = -1;
         } else {
             if (kb->capslock && ascii >= 'a' && ascii <= 'z')
@@ -321,9 +337,6 @@ const uint8_t *keyboard_get_pressed_keys(const keyboard_t *kb, int *count)
     *count = n;
     return kb->prev_keys;
 }
-
-
-/* ── NVS keymap ─────────────────────────────────────────── */
 
 
 

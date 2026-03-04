@@ -1,5 +1,6 @@
 #include "gap.h"
 #include "hid.h"
+#include "save.h"
 
 #include "esp_bt.h"
 #include "esp_bt_main.h"
@@ -708,7 +709,7 @@ esp_err_t gap_clear_all_bonds(void)
 #endif
 
     /* Also clear any saved gamepad profiles */
-    gp_profiles_clear_all();
+    nvs_clear_all();
 
     ESP_LOGI(TAG, "All bonds cleared");
     return ESP_OK;

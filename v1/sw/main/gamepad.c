@@ -1,9 +1,10 @@
 #include "gamepad.h"
+#include "save.h"
+
 #include "esp_log.h"
 #include "esp_hid_common.h"
 #include "esp_hidh.h"
-#include "nvs_flash.h"
-#include "nvs.h"
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -178,10 +179,14 @@ gamepad_t *gamepad_create(const hid_field_map_t *map,
         const gp_profile_t *prof = lookup_profile(vid, pid);
         memcpy(&gp->profile, prof, sizeof(gp_profile_t));
         gp->profile.name = prof->name;
-
         if (prof->fixup)
             prof->fixup(gp);
-
+        
+        /* saved button maps */
+        int savedmap[GP_BTN_COUNT];
+        if (nvs_load("GP", esp_hidh_dev_bda_get(dev), savedmap, GP_BTN_COUNT) == ESP_OK)
+            memcpy(&gp->profile.map, savedmap, GP_BTN_COUNT);
+        
         gp->cb        = cb;
         gp->user_data = user_data;
 
@@ -211,14 +216,18 @@ void gamepad_destroy(gamepad_t *gp)
     free(gp);
 }
 
-void gamepad_set_profile(gamepad_t *gp, const gp_profile_t *profile)
+void gamepad_override_button_map(gamepad_t *gp,
+                                 struct esp_hidh_dev_s *dev,
+                                 int8_t map[GP_BTN_COUNT],
+                                 bool save)
 {
-    if (gp && profile) {
-        memcpy(&gp->profile, profile, sizeof(gp_profile_t));
-        gp->profile.name = profile->name;
-        ESP_LOGI(TAG, "Profile changed to: %s", profile->name);
+    if (gp) {
+        memcpy(&gp->profile.map, map, GP_BTN_COUNT);
+        if (save)
+            nvs_save("GP", esp_hidh_dev_bda_get(dev), map, GP_BTN_COUNT);
     }
 }
+
 
 /* ── process report ───────────────────────────────────────────────── */
 
@@ -316,89 +325,6 @@ const gp_state_t *gamepad_get_state(const gamepad_t *gp)
     return gp ? &gp->state : NULL;
 }
 
-/* ── NVS profile storage ─────────────────────────────────────────── */
-
-#define GP_NVS_NAMESPACE "gp_profiles"
-
-/* BDA → NVS key: "AABBCCDDEEFF" (12 chars, fits in 15-char limit) */
-static void bda_to_key(const uint8_t *bda, char *key)
-{
-    snprintf(key, 13, "%02X%02X%02X%02X%02X%02X",
-             bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
-}
-
-esp_err_t gp_profile_save(const uint8_t *bda, const gp_profile_t *profile)
-{
-    if (!bda || !profile) return ESP_ERR_INVALID_ARG;
-
-    char key[13];
-    bda_to_key(bda, key);
-
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(GP_NVS_NAMESPACE, NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-
-    err = nvs_set_blob(h, key, profile->map, GP_BTN_COUNT);
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-
-    if (err == ESP_OK)
-        ESP_LOGI(TAG, "Saved profile for %s", key);
-    return err;
-}
-
-esp_err_t gp_profile_load(const uint8_t *bda, gp_profile_t *out)
-{
-    if (!bda || !out) return ESP_ERR_INVALID_ARG;
-
-    char key[13];
-    bda_to_key(bda, key);
-
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(GP_NVS_NAMESPACE, NVS_READONLY, &h);
-    if (err != ESP_OK) return err;
-
-    size_t len = GP_BTN_COUNT;
-    err = nvs_get_blob(h, key, out->map, &len);
-    nvs_close(h);
-
-    if (err == ESP_OK) {
-        out->name = "Custom";
-        ESP_LOGI(TAG, "Loaded custom profile for %s", key);
-    }
-    return err;
-}
-
-esp_err_t gp_profile_delete(const uint8_t *bda)
-{
-    if (!bda) return ESP_ERR_INVALID_ARG;
-
-    char key[13];
-    bda_to_key(bda, key);
-
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(GP_NVS_NAMESPACE, NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-
-    err = nvs_erase_key(h, key);
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-    return err;
-}
-
-esp_err_t gp_profiles_clear_all(void)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(GP_NVS_NAMESPACE, NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-
-    err = nvs_erase_all(h);
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-
-    ESP_LOGI(TAG, "Cleared all saved profiles");
-    return err;
-}
 
 /* ╔════════════════════════════════════════════════════════════════════╗
  * ║  DEVICE-SPECIFIC CUSTOMIZATIONS                                    ║

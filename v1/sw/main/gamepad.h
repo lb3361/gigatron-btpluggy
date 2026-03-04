@@ -67,8 +67,11 @@ gamepad_t *gamepad_create(const hid_field_map_t *map,
 
 void gamepad_destroy(gamepad_t *gp);
 
-/* Override the auto-detected button profile. */
-void gamepad_set_profile(gamepad_t *gp, const gp_profile_t *profile);
+/* Override the button map */
+void gamepad_override_button_map(gamepad_t *gp,
+                                 struct esp_hidh_dev_s *dev,
+                                 int8_t map[GP_BTN_COUNT],
+                                 bool save);
 
 /* Feed a raw HID INPUT report. */
 void gamepad_process_report(gamepad_t *gp,
@@ -79,19 +82,3 @@ void gamepad_process_report(gamepad_t *gp,
 /* Query current state (valid until next process_report). */
 const gp_state_t *gamepad_get_state(const gamepad_t *gp);
 
-/* ── NVS profile storage ─────────────────────────────────────────── */
-
-/* Save a custom button profile for the device identified by bda.
- * Only the map[] array is stored (GP_BTN_COUNT bytes).
- * The profile is loaded automatically on reconnect. */
-esp_err_t gp_profile_save(const uint8_t *bda, const gp_profile_t *profile);
-
-/* Load a previously saved profile for this bda.
- * Returns ESP_ERR_NOT_FOUND if no custom profile exists. */
-esp_err_t gp_profile_load(const uint8_t *bda, gp_profile_t *out);
-
-/* Delete a saved profile for this bda. */
-esp_err_t gp_profile_delete(const uint8_t *bda);
-
-/* Erase all saved profiles (call when clearing all bonds). */
-esp_err_t gp_profiles_clear_all(void);

@@ -125,12 +125,6 @@ static void setup_decoder(connected_dev_t *cdev, esp_hidh_dev_t *dev)
         cdev->type = DEV_TYPE_GAMEPAD;
         cdev->decoder.gamepad = gp;
         ESP_LOGI(TAG, "Created gamepad decoder");
-
-        /* Load custom profile from NVS if one was saved for this device */
-        gp_profile_t saved;
-        if (gp_profile_load(cdev->bda, &saved) == ESP_OK) {
-            gamepad_set_profile(gp, &saved);
-        }
     }
 }
 
