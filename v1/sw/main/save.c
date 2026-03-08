@@ -33,7 +33,7 @@ esp_err_t nvs_save(const char *key, const uint8_t *bda, const void *data, size_t
     if (err == ESP_OK)
         ESP_LOGI(TAG, "Saved %d bytes of nvs data for %s", len, fullkey);
     else
-        ESP_LOGE(TAG, "Unable to save %d bytes of nvs data for %s", len, fullkey);
+        ESP_LOGE(TAG, "Failed to save %d bytes of nvs data for %s", len, fullkey);
     return err;
 }
 
@@ -53,8 +53,6 @@ esp_err_t nvs_load(const char *key, const uint8_t *bda, void *data, size_t len)
         err = ESP_FAIL;
     if (err == ESP_OK)
         ESP_LOGI(TAG, "Loaded %d bytes of nvs data for %s", len, fullkey);
-    else
-        ESP_LOGE(TAG, "Unable to load %d bytes of nvs data for %s", len, fullkey);
     nvs_close(h);
     return err;
 }
