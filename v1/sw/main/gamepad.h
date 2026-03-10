@@ -25,6 +25,7 @@ typedef struct {
     bool     dpad_left;
     bool     dpad_right;
     uint16_t raw_buttons;             /* raw bitfield (pre-mapping) */
+    uint8_t  giga_buttons;            /* gigatron button byte */
 } gp_state_t;
 
 /* ── button profile ───────────────────────────────────────────────── */

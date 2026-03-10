@@ -61,11 +61,11 @@ static void kb_event_handler(const kb_event_t *ev, void *user_data)
 static void gp_event_handler(const gp_state_t *st, void *user_data)
 {
     ESP_LOGI(TAG, "GP: A=%d B=%d START=%d SEL=%d "
-             "U=%d D=%d L=%d R=%d raw=0x%04x",
+             "U=%d D=%d L=%d R=%d raw=0x%04x g-btn=0x%02x",
              st->buttons[GP_BTN_A], st->buttons[GP_BTN_B],
              st->buttons[GP_BTN_START], st->buttons[GP_BTN_SELECT],
              st->dpad_up, st->dpad_down, st->dpad_left, st->dpad_right,
-             st->raw_buttons);
+             st->raw_buttons, st->giga_buttons);
 }
 
 /* ── button handling ───────────────────────────────────────────────── */

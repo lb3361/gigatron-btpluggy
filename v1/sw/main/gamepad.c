@@ -313,6 +313,16 @@ void gamepad_process_report(gamepad_t *gp,
 
     /* ---- fire callback on change ---- */
     if (gp->cb && memcmp(&gp->state, &gp->prev_state, sizeof(gp_state_t)) != 0) {
+        uint8_t gb = 0xff;
+        if (gp->state.dpad_right)             { gb ^= 1; }
+        if (gp->state.dpad_left)              { gb ^= 2; }
+        if (gp->state.dpad_down)              { gb ^= 4; }
+        if (gp->state.dpad_up)                { gb ^= 8; }
+        if (gp->state.buttons[GP_BTN_START])  { gb ^= 16; }
+        if (gp->state.buttons[GP_BTN_SELECT]) { gb ^= 32; }
+        if (gp->state.buttons[GP_BTN_B])      { gb ^= 64; }
+        if (gp->state.buttons[GP_BTN_A])      { gb ^= 128; }
+        gp->state.giga_buttons = gb;
         gp->cb(&gp->state, gp->user_data);
     }
     gp->prev_state = gp->state;
