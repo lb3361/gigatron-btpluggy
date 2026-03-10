@@ -27,21 +27,18 @@ static TaskHandle_t s_button_task_handle;
 static void gap_callback(gap_event_t event, void *param)
 {
     if (gap_is_pairing_active())
-        led_start_flashing_blue();
+        led_set_persistent(0, 0, 64, 500);
     else if (hid_get_connected_count() > 0)
-        led_set_solid_blue();
+        led_set_persistent(0, 0, 64, 0);
     else
-        led_neopixel_off();
+        led_set_persistent(0, 0, 0, 0);
+    if  (event == GAP_EVT_DEVICE_CONNECTED)
+        led_set_transient(0, 64, 0, 1000);
 }
 
 static void hid_conn_cb(esp_hidh_dev_t *dev, bool connected)
 {
-    /* Notify the GAP layer / LED through gap events */
-    if (connected) {
-        gap_callback(GAP_EVT_DEVICE_CONNECTED, NULL);
-    } else {
-        gap_callback(GAP_EVT_DEVICE_DISCONNECTED, NULL);
-    }
+    gap_callback((connected) ? GAP_EVT_DEVICE_CONNECTED : GAP_EVT_DEVICE_DISCONNECTED, NULL);
 }
 
 static void hid_report_cb(const hid_report_t *report)
@@ -53,6 +50,7 @@ static void kb_event_handler(const kb_event_t *ev, void *user_data)
 {
     int c = ev->giga_key;
     if (c < ' ' || c >= 0x7f) { c = ' '; }
+    
     ESP_LOGI(TAG, "KB: %s scancode=0x%02x mod=0x%02x g-btn=0x%02x g-key=0x%02x (%c)",
              ev->type == KB_KEY_DOWN ? "DOWN" : "UP",
              ev->scancode, ev->modifiers, ev->giga_buttons, ev->giga_key, c);
@@ -99,11 +97,9 @@ static void button_task(void *arg)
 
         if (held_ms >= LONG_PRESS_MS) {
             ESP_LOGW(TAG, "Long press — clearing all bonds");
+            gap_stop_pairing();
             gap_clear_all_bonds();
-            /* Flash red briefly as feedback */
-            led_set_neopixel(64, 0, 0);
-            vTaskDelay(pdMS_TO_TICKS(1500));
-            led_neopixel_off();
+            led_set_transient(64, 0, 0, 1000);
         } else {
             if (gap_is_pairing_active()) {
                 ESP_LOGI(TAG, "Button press — stopping pairing");

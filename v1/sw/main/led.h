@@ -9,18 +9,9 @@
  *   GPIO0  = NeoPixel data (WS2812, driven via RMT) */
 esp_err_t led_init(void);
 
-/* Set NeoPixel to an arbitrary RGB color. */
-void led_set_neopixel(uint8_t r, uint8_t g, uint8_t b);
+/* Set persistent state (flashing with period, period_ms=0 means solid) */
+void led_set_persistent(uint8_t r, uint8_t g, uint8_t b, uint16_t period_ms);
 
-/* Turn NeoPixel off. */
-void led_neopixel_off(void);
-
-/* Start flashing blue at ~2 Hz. */
-void led_start_flashing_blue(void);
-
-/* Stop flashing. Does NOT change the current color. */
-void led_stop_flashing(void);
-
-/* Set solid blue and stop any flashing. */
-void led_set_solid_blue(void);
+/* Set transient state (auto-expires to persistent state) */
+void led_set_transient(uint8_t r, uint8_t g, uint8_t b, uint16_t duration_ms);
 

@@ -16,8 +16,23 @@ static const char *TAG = "LED";
 
 static rmt_channel_handle_t s_rmt_channel;
 static rmt_encoder_handle_t s_rmt_encoder;
-static esp_timer_handle_t s_flash_timer;
-static bool s_flash_on;
+static esp_timer_handle_t s_timer;
+
+typedef enum {
+    LED_STATE_TRANSIENT,
+    LED_STATE_SOLID,
+    LED_STATE_FLASHING,
+} led_state_t;
+
+static led_state_t s_nextstate = LED_STATE_SOLID;
+
+typedef struct {
+    uint8_t r, g, b;
+    uint16_t period_ms;
+} led_state_data_t;
+
+static led_state_data_t s_persistent = {0};
+static led_state_data_t s_transient = {0};
 
 /* WS2812 timing at 10 MHz RMT resolution (100 ns per tick):
  * BIT0: 3 ticks high (300ns), 9 ticks low (900ns)
@@ -31,13 +46,29 @@ static void neopixel_send(uint8_t r, uint8_t g, uint8_t b)
     rmt_tx_wait_all_done(s_rmt_channel, pdMS_TO_TICKS(100));
 }
 
-static void flash_timer_cb(void *arg)
+static void timer_cb(void *arg)
 {
-    s_flash_on = !s_flash_on;
-    if (s_flash_on) {
-        neopixel_send(0, 0, 64);
-    } else {
+    switch (s_nextstate) {
+    case LED_STATE_TRANSIENT:
+        neopixel_send(s_transient.r, s_transient.g, s_transient.b);
+        s_nextstate = LED_STATE_SOLID;
+        esp_timer_start_once(s_timer, s_transient.period_ms * 1000);
+        break;
+        
+    case LED_STATE_SOLID:
+        neopixel_send(s_persistent.r, s_persistent.g, s_persistent.b);
+        if (s_persistent.period_ms > 0) {
+            s_nextstate = LED_STATE_FLASHING;
+            esp_timer_start_once(s_timer, s_persistent.period_ms * 1000 / 2);
+        }
+        break;
+        
+    case LED_STATE_FLASHING:
         neopixel_send(0, 0, 0);
+        s_nextstate = LED_STATE_SOLID;
+        neopixel_send(s_persistent.r, s_persistent.g, s_persistent.b);
+        esp_timer_start_once(s_timer, s_persistent.period_ms * 1000 / 2);
+        break;
     }
 }
 
@@ -79,12 +110,12 @@ esp_err_t led_init(void)
 
     ESP_RETURN_ON_ERROR(rmt_enable(s_rmt_channel), TAG, "rmt enable");
 
-    /* Flash timer (created but not started) */
+    /* Timer for state transitions */
     esp_timer_create_args_t timer_args = {
-        .callback = flash_timer_cb,
-        .name = "neo_flash",
+        .callback = timer_cb,
+        .name = "led_state",
     };
-    ESP_RETURN_ON_ERROR(esp_timer_create(&timer_args, &s_flash_timer), TAG, "timer");
+    ESP_RETURN_ON_ERROR(esp_timer_create(&timer_args, &s_timer), TAG, "timer");
 
     /* Start dark */
     neopixel_send(0, 0, 0);
@@ -93,34 +124,26 @@ esp_err_t led_init(void)
     return ESP_OK;
 }
 
-void led_set_neopixel(uint8_t r, uint8_t g, uint8_t b)
+void led_set_persistent(uint8_t r, uint8_t g, uint8_t b, uint16_t period_ms)
 {
-    esp_timer_stop(s_flash_timer);
-    neopixel_send(r, g, b);
+    esp_timer_stop(s_timer);
+    s_persistent.r = r;
+    s_persistent.g = g;
+    s_persistent.b = b;
+    s_persistent.period_ms = period_ms;
+    s_nextstate = LED_STATE_SOLID;
+    esp_timer_start_once(s_timer, 1); /* 1ms */
 }
 
-void led_neopixel_off(void)
+void led_set_transient(uint8_t r, uint8_t g, uint8_t b, uint16_t duration_ms)
 {
-    esp_timer_stop(s_flash_timer); /* ok if not running */
-    neopixel_send(0, 0, 0);
-}
-
-void led_start_flashing_blue(void)
-{
-    s_flash_on = false;
-    esp_timer_stop(s_flash_timer);
-    esp_timer_start_periodic(s_flash_timer, 250000); /* 250 ms */
-}
-
-void led_stop_flashing(void)
-{
-    esp_timer_stop(s_flash_timer);
-}
-
-void led_set_solid_blue(void)
-{
-    esp_timer_stop(s_flash_timer);
-    neopixel_send(0, 0, 64);
+    esp_timer_stop(s_timer);
+    s_transient.r = r;
+    s_transient.g = g;
+    s_transient.b = b;
+    s_transient.period_ms = duration_ms;
+    s_nextstate = LED_STATE_TRANSIENT;
+    esp_timer_start_once(s_timer, 1);
 }
 
 /* Local Variables: */

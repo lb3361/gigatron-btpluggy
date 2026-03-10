@@ -89,7 +89,7 @@ static void track_disconnect(const uint8_t *bda)
     s_connected_count--;
 }
 
-static void setup_decoder(connected_dev_t *cdev, esp_hidh_dev_t *dev)
+static int setup_decoder(connected_dev_t *cdev, esp_hidh_dev_t *dev)
 {
     size_t num_maps = 0;
     esp_hid_raw_report_map_t *maps = NULL;
@@ -97,13 +97,13 @@ static void setup_decoder(connected_dev_t *cdev, esp_hidh_dev_t *dev)
     esp_err_t err = esp_hidh_dev_report_maps_get(dev, &num_maps, &maps);
     if (err != ESP_OK || num_maps == 0 || !maps) {
         ESP_LOGW(TAG, "No report maps available");
-        return;
+        return 0;
     }
 
     err = hid_parse_report_map(maps[0].data, maps[0].len, &cdev->field_map);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to parse report descriptor");
-        return;
+        return 0;
     }
 
     hid_dump_field_map(&cdev->field_map);
@@ -116,7 +116,7 @@ static void setup_decoder(connected_dev_t *cdev, esp_hidh_dev_t *dev)
         cdev->type = DEV_TYPE_KEYBOARD;
         cdev->decoder.keyboard = kb;
         ESP_LOGI(TAG, "Created keyboard decoder");
-        return;
+        return 1;
     }
 
     gamepad_t *gp = gamepad_create(&cdev->field_map, dev,
@@ -125,7 +125,9 @@ static void setup_decoder(connected_dev_t *cdev, esp_hidh_dev_t *dev)
         cdev->type = DEV_TYPE_GAMEPAD;
         cdev->decoder.gamepad = gp;
         ESP_LOGI(TAG, "Created gamepad decoder");
+        return 1;
     }
+    return 0;
 }
 
 static void hidh_event_handler(void *arg, esp_event_base_t base,
@@ -145,10 +147,8 @@ static void hidh_event_handler(void *arg, esp_event_base_t base,
                 esp_hidh_dev_dump(p->open.dev, stdout);
                 gap_stop_pairing();
                 connected_dev_t *cdev = track_connect(bda);
-                if (cdev) {
-                    setup_decoder(cdev, p->open.dev);
-                }
-                if (s_conn_cb) s_conn_cb(p->open.dev, true);
+                if (cdev && setup_decoder(cdev, p->open.dev) && s_conn_cb)
+                    s_conn_cb(p->open.dev, true);
                 break;
             }
         }
@@ -208,7 +208,8 @@ static void hidh_event_handler(void *arg, esp_event_base_t base,
                      esp_hidh_dev_name_get(p->close.dev),
                      p->close.reason);
             track_disconnect(bda);
-            if (s_conn_cb) s_conn_cb(p->close.dev, false);
+            if (s_conn_cb)
+                s_conn_cb(p->close.dev, false);
         }
         break;
     }
