@@ -19,12 +19,14 @@ static rmt_encoder_handle_t s_rmt_encoder;
 static esp_timer_handle_t s_timer;
 
 typedef enum {
+    LED_STATE_START_TRANSIENT,
+    LED_STATE_START_PERSISTENT,
     LED_STATE_TRANSIENT,
     LED_STATE_SOLID,
     LED_STATE_FLASHING,
 } led_state_t;
 
-static led_state_t s_nextstate = LED_STATE_SOLID;
+static led_state_t s_state = LED_STATE_START_PERSISTENT;
 
 typedef struct {
     uint8_t r, g, b;
@@ -48,26 +50,25 @@ static void neopixel_send(uint8_t r, uint8_t g, uint8_t b)
 
 static void timer_cb(void *arg)
 {
-    switch (s_nextstate) {
-    case LED_STATE_TRANSIENT:
+    switch (s_state) {
+    case LED_STATE_START_TRANSIENT:
         neopixel_send(s_transient.r, s_transient.g, s_transient.b);
-        s_nextstate = LED_STATE_SOLID;
+        s_state = LED_STATE_TRANSIENT;
         esp_timer_start_once(s_timer, s_transient.period_ms * 1000);
         break;
-        
-    case LED_STATE_SOLID:
+    case LED_STATE_START_PERSISTENT:
+    case LED_STATE_TRANSIENT:
+    case LED_STATE_FLASHING:
         neopixel_send(s_persistent.r, s_persistent.g, s_persistent.b);
         if (s_persistent.period_ms > 0) {
-            s_nextstate = LED_STATE_FLASHING;
-            esp_timer_start_once(s_timer, s_persistent.period_ms * 1000 / 2);
+            s_state = LED_STATE_SOLID;
+            esp_timer_start_once(s_timer, s_persistent.period_ms * 500);
         }
         break;
-        
-    case LED_STATE_FLASHING:
+    case LED_STATE_SOLID:
         neopixel_send(0, 0, 0);
-        s_nextstate = LED_STATE_SOLID;
-        neopixel_send(s_persistent.r, s_persistent.g, s_persistent.b);
-        esp_timer_start_once(s_timer, s_persistent.period_ms * 1000 / 2);
+        s_state = LED_STATE_FLASHING;
+        esp_timer_start_once(s_timer, s_persistent.period_ms * 500);
         break;
     }
 }
@@ -126,23 +127,31 @@ esp_err_t led_init(void)
 
 void led_set_persistent(uint8_t r, uint8_t g, uint8_t b, uint16_t period_ms)
 {
-    esp_timer_stop(s_timer);
     s_persistent.r = r;
     s_persistent.g = g;
     s_persistent.b = b;
     s_persistent.period_ms = period_ms;
-    s_nextstate = LED_STATE_SOLID;
-    esp_timer_start_once(s_timer, 1); /* 1ms */
+    /* Do not perturbate ongoing transient display */
+    uint64_t expiry;
+    if (s_state == LED_STATE_TRANSIENT)
+        if (esp_timer_get_expiry_time(s_timer, &expiry) == ESP_OK)
+            if (expiry > esp_timer_get_time() + 100000 )
+                return;
+    /* Restart */
+    esp_timer_stop(s_timer);
+    s_state = LED_STATE_START_PERSISTENT;
+    esp_timer_start_once(s_timer, 1); /* 0? */
 }
 
 void led_set_transient(uint8_t r, uint8_t g, uint8_t b, uint16_t duration_ms)
 {
-    esp_timer_stop(s_timer);
     s_transient.r = r;
     s_transient.g = g;
     s_transient.b = b;
     s_transient.period_ms = duration_ms;
-    s_nextstate = LED_STATE_TRANSIENT;
+    /* Restart */
+    esp_timer_stop(s_timer);
+    s_state = LED_STATE_START_TRANSIENT;
     esp_timer_start_once(s_timer, 1);
 }
 
