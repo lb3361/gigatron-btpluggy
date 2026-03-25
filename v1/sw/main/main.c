@@ -14,6 +14,7 @@
 #include "gap.h"
 #include "hid.h"
 #include "led.h"
+#include "gigatron.h"
 
 static const char *TAG = "MAIN";
 
@@ -178,6 +179,9 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "Bonded devices: %d", gap_get_bonded_count());
     ESP_LOGI(TAG, "Ready. Short press GPIO35 to pair (120s). Long press to clear bonds.");
+
+    /* 11. Gigatron interface init */
+    gigatron_init();
 }
 
 /* Local Variables: */

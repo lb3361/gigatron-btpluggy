@@ -560,7 +560,7 @@ esp_err_t gap_init(gap_event_cb_t callback)
 
     /* SSP with IO_CAP_NONE → just-works */
     esp_bt_sp_param_t sp_type = ESP_BT_SP_IOCAP_MODE;
-    esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_IO; // NONE;
+    esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_NONE;
     esp_bt_gap_set_security_param(sp_type, &iocap, sizeof(iocap));
 
     /* Legacy PIN fallback */
