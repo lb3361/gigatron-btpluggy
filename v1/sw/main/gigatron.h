@@ -35,14 +35,14 @@
 #define GIGATRON_IE_GPIO       GPIO_NUM_37
 #define GIGATRON_SERIN_GPIO    GPIO_NUM_38
 
-#define GIGATRON_Q0_GPIO       GPIO_NUM_7
-#define GIGATRON_Q1_GPIO       GPIO_NUM_8
-#define GIGATRON_Q2_GPIO       GPIO_NUM_26
-#define GIGATRON_Q3_GPIO       GPIO_NUM_25
-#define GIGATRON_Q4_GPIO       GPIO_NUM_19
-#define GIGATRON_Q5_GPIO       GPIO_NUM_20
-#define GIGATRON_Q6_GPIO       GPIO_NUM_21
-#define GIGATRON_Q7_GPIO       GPIO_NUM_22
+#define GIGATRON_QA_GPIO       GPIO_NUM_7
+#define GIGATRON_QB_GPIO       GPIO_NUM_8
+#define GIGATRON_QC_GPIO       GPIO_NUM_26
+#define GIGATRON_QD_GPIO       GPIO_NUM_25
+#define GIGATRON_QE_GPIO       GPIO_NUM_19
+#define GIGATRON_QF_GPIO       GPIO_NUM_20
+#define GIGATRON_QG_GPIO       GPIO_NUM_21
+#define GIGATRON_QH_GPIO       GPIO_NUM_22
 
 /* Gigatron Shift Register Timing:
  * SERCLK (HSYNC) goes LOW for approximately 4µs per scanline.  When
