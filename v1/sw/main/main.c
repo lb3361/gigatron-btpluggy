@@ -55,6 +55,9 @@ static void kb_event_handler(const kb_event_t *ev, void *user_data)
     ESP_LOGI(TAG, "KB: %s scancode=0x%02x mod=0x%02x g-btn=0x%02x g-key=0x%02x (%c)",
              ev->type == KB_KEY_DOWN ? "DOWN" : "UP",
              ev->scancode, ev->modifiers, ev->giga_buttons, ev->giga_key, c);
+    
+    /* Post events into Gigatron interface */
+    gigatron_post((ev->type == KB_KEY_DOWN) ? ev->giga_key : 0xff, ev->giga_buttons);
 }
 
 static void gp_event_handler(const gp_state_t *st, void *user_data)
@@ -65,6 +68,9 @@ static void gp_event_handler(const gp_state_t *st, void *user_data)
              st->buttons[GP_BTN_START], st->buttons[GP_BTN_SELECT],
              st->dpad_up, st->dpad_down, st->dpad_left, st->dpad_right,
              st->raw_buttons, st->giga_buttons);
+
+    /* Post gamepad event into Gigatron interface */
+    gigatron_post(0xFF, st->giga_buttons);
 }
 
 /* ── button handling ───────────────────────────────────────────────── */

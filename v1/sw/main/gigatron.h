@@ -2,6 +2,8 @@
 
 #include "esp_err.h"
 #include <stdint.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 
 /*
  * Gigatron Interface Pin Mapping
@@ -61,7 +63,7 @@
 extern "C" {
 #endif
 
-/* Initialize Gigatron interface hardware
+/* Initialize Gigatron interface hardware and internal event queue
  * Configures GPIO pins but does not enable interrupts yet.
  * 
  * Returns:
@@ -69,6 +71,10 @@ extern "C" {
  *   - Error code on failure
  */
 esp_err_t gigatron_init(void);
+
+/* Post keyboard and gamepad events into the Gigatron interface. */
+void gigatron_post(uint8_t giga_key, uint8_t giga_buttons);
+
 
 #ifdef __cplusplus
 }

@@ -15,6 +15,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 
 static const char *TAG = "GIGA";
 
@@ -33,11 +34,27 @@ static TaskHandle_t s_gigatron_task_handle = NULL;
 uint8_t hc595state;
 uint8_t *hc595ptr = &hc595state;
 
+/* Internal queue for event injection */
+static QueueHandle_t giga_event_queue = NULL;
+
+typedef enum {
+    GIGA_EVENT_NONE    = 0,
+    GIGA_EVENT_KEYBOARD,
+    GIGA_EVENT_GAMEPAD,
+} giga_event_type_t;
+
+typedef struct {
+    giga_event_type_t type;
+    uint8_t code;
+} giga_event_t;
+
+
 /* Scanline counter videoline ranges from -41 to +479,
    - negative during vertical blanking.
    - vsync turns low on row -36 and high on row -28
    - serial input happens on row -27.
 */
+
 int videoline;
 int videolines_since_ie;
 
@@ -71,6 +88,7 @@ static void gigatron_isr(void *arg)
     hw->status1_w1tc.val = (1<<(GIGATRON_SERCLK_GPIO-32));
 
     /* Deal with intermediate /IE assertion */
+#if NOT_YET_IMPLEMENTED
     if (0 /* ((/IE asseerted previous row)) */) {
         /* Adjust videoline to track vsync */
         if (videolines_since_ie == 521) {
@@ -81,7 +99,7 @@ static void gigatron_isr(void *arg)
         }
         videolines_since_ie = 0;
     }
-
+#endif
     /* Increment videline counter */
     videolines_since_ie += 1;
     videoline += 1;
@@ -93,6 +111,33 @@ static void gigatron_isr(void *arg)
             portYIELD_FROM_ISR(woken);
         }
 }
+
+
+/* Post keyboard and gamepad events into the Gigatron interface. */
+void gigatron_post(uint8_t giga_key, uint8_t giga_buttons) {
+    static giga_event_type_t last_event_type = GIGA_EVENT_NONE;
+
+    if (! giga_event_queue) {
+        return;
+    } else if (giga_buttons == 0xff) {
+        if (last_event_type == GIGA_EVENT_GAMEPAD) {
+            giga_event_t ev = { .type = GIGA_EVENT_KEYBOARD, .code = 0xff };
+            xQueueSend(giga_event_queue, &ev, pdMS_TO_TICKS(10));
+            last_event_type = GIGA_EVENT_NONE;
+        }
+        if (giga_key != 0xff) {
+            giga_event_t ev = { .type = GIGA_EVENT_KEYBOARD, .code = giga_key };
+            xQueueSend(giga_event_queue, &ev, pdMS_TO_TICKS(10));
+            last_event_type = GIGA_EVENT_KEYBOARD;
+        }
+    } else {
+        giga_event_t ev = { .type = GIGA_EVENT_GAMEPAD, .code = giga_buttons };
+        xQueueSend(giga_event_queue, &ev, pdMS_TO_TICKS(10));
+        last_event_type = GIGA_EVENT_GAMEPAD;
+    }
+}
+
+
 
 
 /* Main Gigatron task running on core 1 */
@@ -108,12 +153,17 @@ void gigatron_task(void *arg) {
     if (err != ESP_OK)
         ESP_LOGE(TAG, "Failed to acquire interrupt (%d)", err);
 
-    /* Make SERCLK and IE generate core 1 interrupts */
-#if 0
+    /* Make SERCLK core 1 interrupts */
+#if  NOT_YET_IMPLEMENTED
     gpio_dev_t *hw = &GPIO;
     hw->pin[GIGATRON_SERCLK_GPIO].int_type = GPIO_INTR_NEGEDGE;
     hw->pin[GIGATRON_SERCLK_GPIO].int_ena = GPIO_LL_APP_CPU_INTR_ENA;
 #endif
+    /* Do something for /IE */
+#if  NOT_YET_IMPLEMENTED
+    // RMT? PCNT? IRQ?
+#endif
+
 
     /* Vertical blanking loop */
     while (1) {
@@ -124,10 +174,34 @@ void gigatron_task(void *arg) {
         if (dbg_vbl % 60 == 0)
             ESP_LOGI(TAG, "VBL*60 videoline=%d since=%d ieadjust=%d",
                      videoline, videolines_since_ie, dbg_ieadjust);
-#else
-        /* Placeholder for future implementation */
-        vTaskDelay(pdMS_TO_TICKS(1000));
 #endif
+        /* Process event injection state machine */
+        giga_event_t ev;
+        static uint8_t inject;
+        static int framecounter = 0;
+        if (framecounter > 0)
+            {
+                hc595ptr = &inject;
+                framecounter--;
+            }
+        else if (giga_event_queue && xQueueReceive(giga_event_queue, &ev, 0) == pdTRUE)
+            {
+                if (ev.type == GIGA_EVENT_KEYBOARD) {
+                    inject = ev.code;
+                    hc595ptr = &inject;
+                    framecounter = 2;
+                }
+                if (ev.type == GIGA_EVENT_GAMEPAD) {
+                    inject = ev.code;
+                    hc595ptr = &inject;
+                    framecounter = 0;
+                }
+            }
+        else
+            {
+                /* Pass serial events */
+                hc595ptr = &hc595state;
+            }
     }
 }
 
@@ -154,13 +228,22 @@ static void init_bytemap(void)
     ESP_LOGI(TAG, "bytemap initialized with %d entries", 256);
 }
 
-/* Initialize all Gigatron interface GPIO pins
+/* Initialize all Gigatron interface GPIO pins and event queue
  * Sets up pin directions and initial states.
  */
 esp_err_t gigatron_init(void) {
     esp_err_t err;
 
     ESP_LOGI(TAG, "Initializing Gigatron interface...");
+
+    /* Create event queue (capacity: 6 events) */
+    if (giga_event_queue == NULL) {
+        giga_event_queue = xQueueCreate(6, sizeof(giga_event_t));
+        if (giga_event_queue == NULL) {
+            ESP_LOGE(TAG, "Failed to create event queue");
+            return ESP_FAIL;
+        }
+    }
 
     /* Initialize bytemap for fast GPIO writes */
     init_bytemap();
@@ -224,7 +307,6 @@ esp_err_t gigatron_init(void) {
 
     return ESP_OK;
 }
-
 
 /* Local Variables: */
 /* mode: c */
