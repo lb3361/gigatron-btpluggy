@@ -170,8 +170,8 @@ const keyTuple_t keymaps[] = {
   { +US+GB+DE+FR+IT+ES +SHIFT, 0x17,  84 }, // 'T'
   { +US+GB+DE+FR+IT+ES +SHIFT, 0x18,  85 }, // 'U'
   { +US+GB+DE+FR+IT+ES +SHIFT, 0x19,  86 }, // 'V'
-  {          +FR       +SHIFT, 0x1A,  87 }, // 'W'
-  { +US+GB+DE   +IT+ES +SHIFT, 0x1D,  87 },
+  {          +FR       +SHIFT, 0x1D,  87 }, // 'W'
+  { +US+GB+DE   +IT+ES +SHIFT, 0x1A,  87 },
   { +US+GB+DE+FR+IT+ES +SHIFT, 0x1B,  88 }, // 'X'
   {       +DE          +SHIFT, 0x1D,  89 }, // 'Y'
   { +US+GB   +FR+IT+ES +SHIFT, 0x1C,  89 },

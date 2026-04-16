@@ -123,6 +123,9 @@ static void button_task(void *arg)
 
 void app_main(void)
 {
+    /* 0. Gigatron interface init */
+    gigatron_init();
+
     /* 1. NVS */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -186,8 +189,6 @@ void app_main(void)
     ESP_LOGI(TAG, "Bonded devices: %d", gap_get_bonded_count());
     ESP_LOGI(TAG, "Ready. Short press GPIO35 to pair (120s). Long press to clear bonds.");
 
-    /* 11. Gigatron interface init */
-    gigatron_init();
 }
 
 /* Local Variables: */

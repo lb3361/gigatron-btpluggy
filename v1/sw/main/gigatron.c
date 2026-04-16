@@ -25,6 +25,7 @@ static const char *TAG = "GIGA";
 #if DEBUG
 int dbg_vbl = 0;
 int dbg_ieadjust = 0;
+uint32_t dbg_postin1;
 #endif
 
 /* Task handle */
@@ -154,16 +155,14 @@ void gigatron_task(void *arg) {
         ESP_LOGE(TAG, "Failed to acquire interrupt (%d)", err);
 
     /* Make SERCLK core 1 interrupts */
-#if  NOT_YET_IMPLEMENTED
     gpio_dev_t *hw = &GPIO;
     hw->pin[GIGATRON_SERCLK_GPIO].int_type = GPIO_INTR_NEGEDGE;
     hw->pin[GIGATRON_SERCLK_GPIO].int_ena = GPIO_LL_APP_CPU_INTR_ENA;
-#endif
+
     /* Do something for /IE */
 #if  NOT_YET_IMPLEMENTED
     // RMT? PCNT? IRQ?
 #endif
-
 
     /* Vertical blanking loop */
     while (1) {
@@ -194,10 +193,10 @@ void gigatron_task(void *arg) {
                 if (ev.type == GIGA_EVENT_GAMEPAD) {
                     inject = ev.code;
                     hc595ptr = &inject;
-                    framecounter = 0;
+                    framecounter = (ev.code == 0xff) ? 0 : -1;
                 }
             }
-        else
+        else if (framecounter >= 0)
             {
                 /* Pass serial events */
                 hc595ptr = &hc595state;
@@ -236,13 +235,21 @@ esp_err_t gigatron_init(void) {
 
     ESP_LOGI(TAG, "Initializing Gigatron interface...");
 
-    /* Create event queue (capacity: 6 events) */
-    if (giga_event_queue == NULL) {
-        giga_event_queue = xQueueCreate(6, sizeof(giga_event_t));
-        if (giga_event_queue == NULL) {
-            ESP_LOGE(TAG, "Failed to create event queue");
-            return ESP_FAIL;
-        }
+    /* Configure output pins */
+    gpio_config_t cfg_out = {
+        .pin_bit_mask = ((1ULL << GIGATRON_QA_GPIO)|(1ULL << GIGATRON_QB_GPIO)|
+                         (1ULL << GIGATRON_QC_GPIO)|(1ULL << GIGATRON_QD_GPIO)|
+                         (1ULL << GIGATRON_QE_GPIO)|(1ULL << GIGATRON_QF_GPIO)|
+                         (1ULL << GIGATRON_QG_GPIO)|(1ULL << GIGATRON_QH_GPIO) ),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    err = gpio_config(&cfg_out);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure output pins: err=%d", err);
+        return err;
     }
 
     /* Initialize bytemap for fast GPIO writes */
@@ -265,25 +272,14 @@ esp_err_t gigatron_init(void) {
         return err;
     }
 
-    /* Configure output pins */
-    gpio_config_t cfg_out = {
-        .pin_bit_mask = ((1ULL << GIGATRON_QA_GPIO)|(1ULL << GIGATRON_QB_GPIO)|
-                         (1ULL << GIGATRON_QC_GPIO)|(1ULL << GIGATRON_QD_GPIO)|
-                         (1ULL << GIGATRON_QE_GPIO)|(1ULL << GIGATRON_QF_GPIO)|
-                         (1ULL << GIGATRON_QG_GPIO)|(1ULL << GIGATRON_QH_GPIO) ),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE
-    };
-    err = gpio_config(&cfg_out);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to configure output pins: err=%d", err);
-        return err;
+    /* Create event queue (capacity: 6 events) */
+    if (giga_event_queue == NULL) {
+        giga_event_queue = xQueueCreate(6, sizeof(giga_event_t));
+        if (giga_event_queue == NULL) {
+            ESP_LOGE(TAG, "Failed to create event queue");
+            return ESP_FAIL;
+        }
     }
-
-    /* Initialize bytemap for fast GPIO writes */
-    init_bytemap();
 
     /* Create task on core 1 */
     err = xTaskCreatePinnedToCore(
