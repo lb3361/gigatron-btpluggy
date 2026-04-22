@@ -41,6 +41,7 @@ typedef enum {
     GIGA_EVENT_NONE    = 0,
     GIGA_EVENT_KEYBOARD,
     GIGA_EVENT_GAMEPAD,
+    GIGA_EVENT_RESET,
 } giga_event_type_t;
 
 typedef struct {
@@ -106,8 +107,12 @@ static void gigatron_isr(void *arg)
     if (( hw->status1.val >> (GIGATRON_IE_GPIO-32)) & 1) {
 
         /* Track vsync using /ie assertions */
-        if (videolines_since_ie == 521) 
+        if (videolines_since_ie == 521) {
             videoline  = -27;
+#if DEBUG
+            dbg_ieadjust += 1;
+#endif
+        }
         videolines_since_ie = 0;
 
         /* Clear IE interrupt */
@@ -135,6 +140,8 @@ void gigatron_post(uint8_t giga_key, uint8_t giga_buttons) {
         }
     } else {
         giga_event_t ev = { .type = GIGA_EVENT_GAMEPAD, .code = giga_buttons };
+        if (giga_key == 0xef && giga_buttons == 0xef)
+            ev.type = GIGA_EVENT_RESET;
         xQueueSend(giga_event_queue, &ev, pdMS_TO_TICKS(10));
         last_event_type = GIGA_EVENT_GAMEPAD;
     }
@@ -188,11 +195,15 @@ void gigatron_task(void *arg) {
                     inject = ev.code;
                     hc595ptr = &inject;
                     framecounter = 2;
-                }
-                if (ev.type == GIGA_EVENT_GAMEPAD) {
+                } else {
                     inject = ev.code;
                     hc595ptr = &inject;
-                    framecounter = (ev.code == 0xff) ? 0 : -1;
+                    if (ev.type == GIGA_EVENT_RESET)
+                        framecounter = 150;
+                    else if (ev.code == 0xff)
+                        framecounter = 0;
+                    else
+                        framecounter = -1;
                 }
             }
         else if (framecounter >= 0)
@@ -271,9 +282,9 @@ esp_err_t gigatron_init(void) {
         return err;
     }
 
-    /* Create event queue (capacity: 6 events) */
+    /* Create event queue */
     if (giga_event_queue == NULL) {
-        giga_event_queue = xQueueCreate(6, sizeof(giga_event_t));
+        giga_event_queue = xQueueCreate(GIGATRON_EVENTQUEUE_SIZE, sizeof(giga_event_t));
         if (giga_event_queue == NULL) {
             ESP_LOGE(TAG, "Failed to create event queue");
             return ESP_FAIL;

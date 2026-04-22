@@ -232,15 +232,19 @@ void process_giga_keys(keyboard_t *kb,
     
     /* buttons */
     uint8_t btns = 0;
+    uint8_t ctrlaltdel = 0;
     for (int i=0; i<kb->curr_key_count; i++) {
         uint8_t scan = kb->curr_keys[i];
         for (int j=0; j<sizeof(keybtns)/sizeof(keybtns[0]); j++)
             if (scan == keybtns[j].code)
                 btns |= keybtns[j].btn;
-            else if (scan == 0x4C)
-                btns |= (ctrl && alt) ? 16 : 128;
+        if (scan == 0x4C && ctrl && alt)
+            ctrlaltdel = 1;
     }
-    if (btns) {
+    if (ctrlaltdel && btns == 128) {
+        ev->giga_buttons = 16 ^ 0xff;
+        ev->giga_key = 16 ^ 0xff;
+    } else if (btns) {
         ev->giga_buttons = btns ^ 0xff;
         ev->giga_key = 0xff;
     }

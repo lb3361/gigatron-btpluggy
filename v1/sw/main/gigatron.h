@@ -55,9 +55,10 @@
  */
 
 /* Gigatron task configuration */
-#define GIGATRON_TASK_PRIORITY  5
-#define GIGATRON_TASK_STACK     4096
-#define GIGATRON_TASK_CORE      1
+#define GIGATRON_TASK_PRIORITY    5
+#define GIGATRON_TASK_STACK       4096
+#define GIGATRON_TASK_CORE        1
+#define GIGATRON_EVENTQUEUE_SIZE  8
 
 #ifdef __cplusplus
 extern "C" {
@@ -72,7 +73,12 @@ extern "C" {
  */
 esp_err_t gigatron_init(void);
 
-/* Post keyboard and gamepad events into the Gigatron interface. */
+/* Post keyboard and gamepad events into the Gigatron interface
+ *  - when giga_buttons != 0xff, it represents a button combination.
+ *  - when giga_buttons == 0xff, giga_key represents a key press.
+ *  - when both are 0xef, the start button is maintained for 2.5 secs (reset)
+ * Up to GIGATRON_EVENTQUEUE_SIZE events are queued.
+ */
 void gigatron_post(uint8_t giga_key, uint8_t giga_buttons);
 
 

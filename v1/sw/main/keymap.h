@@ -260,7 +260,6 @@ const keyTuple_t keymaps[] = {
   {       +DE          +ALTGR, 0x30, 126 },
   {    +GB             +SHIFT, 0x31, 126 },  
   { +US+GB+DE+FR+IT+ES +EVERY, 0x2A, 127 },
-  { +US+GB+DE+FR+IT+ES +EVERY, 0x4C, 127 },
   { +US+GB+DE+FR+IT+ES +EVERY, 0x3A, 193 },
   { +US+GB+DE+FR+IT+ES +EVERY, 0x3B, 194 },
   { +US+GB+DE+FR+IT+ES +EVERY, 0x3C, 195 },
@@ -291,6 +290,5 @@ const keyBtn_t keybtns[] = {
   {0x49,  64}, //INS
   {0x4A,  64}, //HOME
   {0x4D, 128}, //END
-  // {0x2A, 128}
-  // {CTRL+ALT+0x2A, 16}
+  {0x4C, 128}, //DEL
 };
