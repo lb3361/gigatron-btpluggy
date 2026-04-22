@@ -25,7 +25,6 @@ static const char *TAG = "GIGA";
 #if DEBUG
 int dbg_vbl = 0;
 int dbg_ieadjust = 0;
-uint32_t dbg_postin1;
 #endif
 
 /* Task handle */
@@ -78,39 +77,42 @@ static void gigatron_isr(void *arg)
 {
     gpio_dev_t *hw = &GPIO;
 
-    /* simulate 74hc595 */
-    uint32_t in = hw->in1.val; // time sensitive
-    uint8_t  ix = *hc595ptr;
-    hw->out_w1ts = bytemap[ix];
-    hw->out_w1tc = bytemap[ix ^ 0xff];
-    hc595state = (hc595state << 1) | ((in >> (GIGATRON_SERIN_GPIO-32)) & 1);
+    /* SERCLK interrupt */
+    if (( hw->status1.val >> (GIGATRON_SERCLK_GPIO-32)) & 1) {
 
-    /* Clear interrupt */
-    hw->status1_w1tc.val = (1<<(GIGATRON_SERCLK_GPIO-32));
+        /* simulate 74hc595 */
+        uint32_t in = hw->in1.val; // time sensitive
+        uint8_t  ix = *hc595ptr;
+        hw->out_w1ts = bytemap[ix];
+        hw->out_w1tc = bytemap[ix ^ 0xff];
+        hc595state = (hc595state << 1) | ((in >> (GIGATRON_SERIN_GPIO-32)) & 1);
+        
+        /* Clear interrupt */
+        hw->status1_w1tc.val = (1<<(GIGATRON_SERCLK_GPIO-32));
 
-    /* Deal with intermediate /IE assertion */
-#if NOT_YET_IMPLEMENTED
-    if (0 /* ((/IE asseerted previous row)) */) {
-        /* Adjust videoline to track vsync */
-        if (videolines_since_ie == 521) {
-            videoline  = -27;
-#if DEBUG
-            dbg_ieadjust += 1;
-#endif
-        }
-        videolines_since_ie = 0;
+        /* Increment videline counter */
+        videolines_since_ie += 1;
+        videoline += 1;
+        if (videoline >= 480)
+            {
+                videoline = -41;
+                BaseType_t woken = pdFALSE;
+                vTaskNotifyGiveFromISR(s_gigatron_task_handle, &woken);
+                portYIELD_FROM_ISR(woken);
+            }
     }
-#endif
-    /* Increment videline counter */
-    videolines_since_ie += 1;
-    videoline += 1;
-    if (videoline >= 480)
-        {
-            videoline = -41;
-            BaseType_t woken = pdFALSE;
-            vTaskNotifyGiveFromISR(s_gigatron_task_handle, &woken);
-            portYIELD_FROM_ISR(woken);
-        }
+
+    /* IE interrupt */
+    if (( hw->status1.val >> (GIGATRON_IE_GPIO-32)) & 1) {
+
+        /* Track vsync using /ie assertions */
+        if (videolines_since_ie == 521) 
+            videoline  = -27;
+        videolines_since_ie = 0;
+
+        /* Clear IE interrupt */
+        hw->status1_w1tc.val = (1<<(GIGATRON_IE_GPIO-32));
+    }
 }
 
 
@@ -154,15 +156,12 @@ void gigatron_task(void *arg) {
     if (err != ESP_OK)
         ESP_LOGE(TAG, "Failed to acquire interrupt (%d)", err);
 
-    /* Make SERCLK core 1 interrupts */
+    /* Make SERCLK and IE core 1 interrupts */
     gpio_dev_t *hw = &GPIO;
     hw->pin[GIGATRON_SERCLK_GPIO].int_type = GPIO_INTR_NEGEDGE;
     hw->pin[GIGATRON_SERCLK_GPIO].int_ena = GPIO_LL_APP_CPU_INTR_ENA;
-
-    /* Do something for /IE */
-#if  NOT_YET_IMPLEMENTED
-    // RMT? PCNT? IRQ?
-#endif
+    hw->pin[GIGATRON_IE_GPIO].int_type = GPIO_INTR_POSEDGE;
+    hw->pin[GIGATRON_IE_GPIO].int_ena = GPIO_LL_APP_CPU_INTR_ENA;
 
     /* Vertical blanking loop */
     while (1) {
