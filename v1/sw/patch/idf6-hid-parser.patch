@@ -1,0 +1,15 @@
+diff --git a/components/esp_hid/src/esp_hid_common.c b/components/esp_hid/src/esp_hid_common.c
+index 364073ed9c..30a7f987af 100644
+--- a/components/esp_hid/src/esp_hid_common.c
++++ b/components/esp_hid/src/esp_hid_common.c
+@@ -349,6 +349,10 @@ esp_hid_report_map_t *esp_hid_parse_report_map(const uint8_t *hid_rm, size_t hid
+         res = handle_cmd(cmd);
+         free(cmd);
+         if (res != 0) {
++            if (s_collection_depth == 0 && hid_rm_len - index < 16 &&
++                s_temp_hid_report_map && s_temp_hid_report_map->reports_len > 0)
++                /* ignore a couple garbage bytes after hid report map */
++                break;
+             return NULL;
+         }
+     }
