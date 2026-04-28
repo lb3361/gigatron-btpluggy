@@ -211,6 +211,7 @@ static void hidh_event_handler(void *arg, esp_event_base_t base,
             if (s_conn_cb)
                 s_conn_cb(p->close.dev, false);
         }
+        esp_hidh_dev_free(p->close.dev);
         break;
     }
 

@@ -185,6 +185,13 @@ static void clear_local(local_state_t *ls)
 esp_err_t hid_parse_report_map(const uint8_t *desc, size_t len,
                                 hid_field_map_t *out)
 {
+    // Basic sanity checks
+    if (!desc || len < 2) {
+        ESP_LOGE(TAG, "Invalid descriptor: null or too short (len=%d)", len);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Clear output structure
     memset(out, 0, sizeof(*out));
 
     global_state_t gs = {0};
@@ -311,6 +318,33 @@ esp_err_t hid_parse_report_map(const uint8_t *desc, size_t len,
 
         pos += 1 + data_size;
     }
+
+    // Defensive checks after parsing
+    for (int r = 0; r < out->num_reports; r++) {
+        hid_report_desc_t *rd = &out->reports[r];
+        // Cap total_bits to prevent overflows
+        if (rd->total_bits > 4096) {
+            ESP_LOGW(TAG, "Report %d too large (%d bits), capping to 4096",
+                     rd->report_id, rd->total_bits);
+            rd->total_bits = 4096;
+        }
+        // Validate field offsets
+        for (int f = 0; f < rd->num_fields; f++) {
+            hid_field_t *fl = &rd->fields[f];
+            if (fl->bit_offset + fl->bit_size * fl->count > rd->total_bits) {
+                ESP_LOGW(TAG, "Field %d in report %d has invalid offset/size",
+                         f, rd->report_id);
+                fl->bit_offset = 0;
+                fl->bit_size = 8;
+                fl->count = 1;
+            }
+        }
+    }
+
+    // Log the parsed structure for debugging
+#if DEBUG
+    hid_dump_field_map(out);
+#endif
 
     ESP_LOGI(TAG, "Parsed %d report(s) from %d-byte descriptor",
              out->num_reports, (int)len);
