@@ -19,20 +19,17 @@
 
 static const char *TAG = "GIGA";
 
-
-#define DEBUG 0
-
-#if DEBUG
-int dbg_vbl = 0;
-int dbg_ieadjust = 0;
-#endif
-
 /* Task handle */
 static TaskHandle_t s_gigatron_task_handle = NULL;
 
 /* Internal state of the simulated 74hc595 */
 uint8_t hc595state;
 uint8_t *hc595ptr = &hc595state;
+
+/* Injected event */
+uint8_t  hc595inject = 0xff;
+uint8_t *hc595framedata = 0;
+unsigned hc595framelen = 0;
 
 /* Internal queue for event injection */
 static QueueHandle_t giga_event_queue = NULL;
@@ -94,27 +91,37 @@ static void gigatron_isr(void *arg)
         /* Increment videline counter */
         videolines_since_ie += 1;
         videoline += 1;
-        if (videoline >= 480)
-            {
-                videoline = -41;
-                BaseType_t woken = pdFALSE;
-                vTaskNotifyGiveFromISR(s_gigatron_task_handle, &woken);
-                portYIELD_FROM_ISR(woken);
-            }
-    }
 
-    /* IE interrupt */
+        /* Bail out quickly when rom reads serialRaw */
+        if (videoline == -27)
+            return;
+        if (videoline == -28) {
+            if (hc595framelen && hc595framedata)
+                hc595ptr = hc595framedata;
+            else if (hc595inject != 0xff)
+                hc595ptr = &hc595inject;
+            else
+                hc595ptr = &hc595state;
+        } else if (hc595framelen > 0 && videolines_since_ie == 1) {
+            hc595ptr++;
+            hc595framelen--;
+        } else {
+            hc595ptr = &hc595state;
+        }
+        if (videoline >= 480) {
+            videoline = -41;
+            BaseType_t woken = pdFALSE;
+            vTaskNotifyGiveFromISR(s_gigatron_task_handle, &woken);
+            portYIELD_FROM_ISR(woken);
+        }
+    }
+        /* IE interrupt */
     if (( hw->status1.val >> (GIGATRON_IE_GPIO-32)) & 1) {
 
         /* Track vsync using /ie assertions */
-        if (videolines_since_ie == 521) {
+        if (videolines_since_ie == 521)
             videoline  = -27;
-#if DEBUG
-            dbg_ieadjust += 1;
-#endif
-        }
         videolines_since_ie = 0;
-
         /* Clear IE interrupt */
         hw->status1_w1tc.val = (1<<(GIGATRON_IE_GPIO-32));
     }
@@ -174,30 +181,20 @@ void gigatron_task(void *arg) {
     while (1) {
         /* Released on VBL */
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-#if DEBUG
-        dbg_vbl ++;
-        if (dbg_vbl % 60 == 0)
-            ESP_LOGI(TAG, "VBL*60 videoline=%d since=%d ieadjust=%d",
-                     videoline, videolines_since_ie, dbg_ieadjust);
-#endif
         /* Process event injection state machine */
         giga_event_t ev;
-        static uint8_t inject;
         static int framecounter = 0;
         if (framecounter > 0)
             {
-                hc595ptr = &inject;
                 framecounter--;
             }
         else if (giga_event_queue && xQueueReceive(giga_event_queue, &ev, 0) == pdTRUE)
             {
                 if (ev.type == GIGA_EVENT_KEYBOARD) {
-                    inject = ev.code;
-                    hc595ptr = &inject;
+                    hc595inject = ev.code;
                     framecounter = 2;
                 } else {
-                    inject = ev.code;
-                    hc595ptr = &inject;
+                    hc595inject = ev.code;
                     if (ev.type == GIGA_EVENT_RESET)
                         framecounter = 150;
                     else if (ev.code == 0xff)
@@ -206,10 +203,16 @@ void gigatron_task(void *arg) {
                         framecounter = -1;
                 }
             }
+#if LOADER_FRAME_INJECTION_NOT_YET_IMPLEMENTED
+        else if ( pending_frames )
+            {
+                hc595framelen = ...;
+                hc595framedata = ...;
+            }
+#endif
         else if (framecounter >= 0)
             {
-                /* Pass serial events */
-                hc595ptr = &hc595state;
+                hc595inject = 0xff;
             }
     }
 }
