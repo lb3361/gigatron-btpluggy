@@ -31,6 +31,9 @@ uint8_t  hc595inject = 0xff;
 uint8_t *hc595framedata = 0;
 unsigned hc595framelen = 0;
 
+/* Frame counter */
+int framecount;
+
 /* Internal queue for event injection */
 static QueueHandle_t giga_event_queue = NULL;
 
@@ -38,7 +41,7 @@ typedef enum {
     GIGA_EVENT_NONE    = 0,
     GIGA_EVENT_KEYBOARD,
     GIGA_EVENT_GAMEPAD,
-    GIGA_EVENT_RESET,
+    GIGA_EVENT_LONG,
 } giga_event_type_t;
 
 typedef struct {
@@ -109,6 +112,7 @@ static void gigatron_isr(void *arg)
             hc595ptr = &hc595state;
         }
         if (videoline >= 480) {
+            framecount++;
             videoline = -41;
             BaseType_t woken = pdFALSE;
             vTaskNotifyGiveFromISR(s_gigatron_task_handle, &woken);
@@ -130,27 +134,28 @@ static void gigatron_isr(void *arg)
 
 /* Post keyboard and gamepad events into the Gigatron interface. */
 void gigatron_post(uint8_t giga_key, uint8_t giga_buttons) {
-    static giga_event_type_t last_event_type = GIGA_EVENT_NONE;
+    static giga_event_t ev = { .type = GIGA_EVENT_NONE };
 
     if (! giga_event_queue) {
         return;
     } else if (giga_buttons == 0xff) {
-        if (last_event_type == GIGA_EVENT_GAMEPAD) {
-            giga_event_t ev = { .type = GIGA_EVENT_KEYBOARD, .code = 0xff };
+        if (ev.type == GIGA_EVENT_GAMEPAD) {
+            ev.type = GIGA_EVENT_KEYBOARD;
+            ev.code = 0xff;
             xQueueSend(giga_event_queue, &ev, pdMS_TO_TICKS(10));
-            last_event_type = GIGA_EVENT_NONE;
+            ev.type = GIGA_EVENT_NONE;
         }
         if (giga_key != 0xff) {
-            giga_event_t ev = { .type = GIGA_EVENT_KEYBOARD, .code = giga_key };
+            ev.type = GIGA_EVENT_KEYBOARD;
+            ev.code = giga_key;
             xQueueSend(giga_event_queue, &ev, pdMS_TO_TICKS(10));
-            last_event_type = GIGA_EVENT_KEYBOARD;
         }
+    } else if (ev.type == GIGA_EVENT_LONG && ev.code == giga_buttons) {
+        /* pass */
     } else {
-        giga_event_t ev = { .type = GIGA_EVENT_GAMEPAD, .code = giga_buttons };
-        if (giga_key == 0xef && giga_buttons == 0xef)
-            ev.type = GIGA_EVENT_RESET;
+        ev.type = (giga_buttons != giga_key) ? GIGA_EVENT_GAMEPAD : GIGA_EVENT_LONG;
+        ev.code = giga_buttons;
         xQueueSend(giga_event_queue, &ev, pdMS_TO_TICKS(10));
-        last_event_type = GIGA_EVENT_GAMEPAD;
     }
 }
 
@@ -183,24 +188,24 @@ void gigatron_task(void *arg) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         /* Process event injection state machine */
         giga_event_t ev;
-        static int framecounter = 0;
-        if (framecounter > 0)
+        static int delay = 0;
+        if (delay > 0)
             {
-                framecounter--;
+                delay--;
             }
         else if (giga_event_queue && xQueueReceive(giga_event_queue, &ev, 0) == pdTRUE)
             {
                 if (ev.type == GIGA_EVENT_KEYBOARD) {
                     hc595inject = ev.code;
-                    framecounter = 2;
+                    delay = 2;
                 } else {
                     hc595inject = ev.code;
-                    if (ev.type == GIGA_EVENT_RESET)
-                        framecounter = 150;
+                    if (ev.type == GIGA_EVENT_LONG)
+                        delay = 150;
                     else if (ev.code == 0xff)
-                        framecounter = 0;
+                        delay = 0;
                     else
-                        framecounter = -1;
+                        delay = -1;
                 }
             }
 #if LOADER_FRAME_INJECTION_NOT_YET_IMPLEMENTED
@@ -210,7 +215,7 @@ void gigatron_task(void *arg) {
                 hc595framedata = ...;
             }
 #endif
-        else if (framecounter >= 0)
+        else if (delay >= 0)
             {
                 hc595inject = 0xff;
             }

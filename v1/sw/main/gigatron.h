@@ -75,9 +75,12 @@ esp_err_t gigatron_init(void);
 
 /* Post keyboard and gamepad events into the Gigatron interface
  *  - when giga_buttons != 0xff, it represents a button combination.
- *  - when giga_buttons == 0xff, giga_key represents a key press.
- *  - when both are 0xef, the start button is maintained for 2.5 secs (reset)
+ *  - when giga_buttons == 0xff, then giga_key represents a key press.
  * Up to GIGATRON_EVENTQUEUE_SIZE events are queued.
+ * Key press are maintained on the input port for 3 frames.
+ * Button combination are maintained until all buttons are released.
+ * When giga_buttons == giga_key != 0xff, the code is maintained for 150 frames.
+ * This is useful to implement ctrl+alt+del for a reset.
  */
 void gigatron_post(uint8_t giga_key, uint8_t giga_buttons);
 
