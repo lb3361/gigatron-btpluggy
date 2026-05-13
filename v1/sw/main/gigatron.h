@@ -5,6 +5,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
+/* Callback type for receiving bytes from Gigatron */
+typedef void (*gigatron_rx_cb_t)(int byte);  // byte: 0-255, -1 for timeout
+
 /*
  * Gigatron Interface Pin Mapping
  * 
@@ -84,6 +87,16 @@ esp_err_t gigatron_init(void);
  */
 void gigatron_post(uint8_t giga_key, uint8_t giga_buttons);
 
+/* Set callback for receiving bytes from Gigatron.
+ * Callback is called with byte (0-255) or -1 if no valid pattern received
+ * for more than 2 frames. RMT is initialized when a valid cb is provided.
+ * Returns:
+ *   - ESP_OK on success
+ *   - Error code on failure
+ */
+
+typedef void (*gigatron_rx_callback_t)(int byte);
+esp_err_t gigatron_init_rx(gigatron_rx_callback_t cb);
 
 #ifdef __cplusplus
 }

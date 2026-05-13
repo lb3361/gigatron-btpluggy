@@ -73,6 +73,14 @@ static void gp_event_handler(const gp_state_t *st, void *user_data)
     gigatron_post(0xFF, st->giga_buttons);
 }
 
+
+static void gigatron_rx_cb(int byte)
+{
+    ESP_LOGI(TAG, "RX callback received %d (%c)", byte,
+             (byte >= 32 && byte < 127) ? byte : '?');
+}
+
+
 /* ── button handling ───────────────────────────────────────────────── */
 
 static void IRAM_ATTR button_isr(void *arg)
@@ -188,6 +196,9 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "Bonded devices: %d", gap_get_bonded_count());
     ESP_LOGI(TAG, "Ready. Short press GPIO35 to pair (120s). Long press to clear bonds.");
+
+    /* 11. Gigatron RX */
+    gigatron_init_rx(gigatron_rx_cb);
 
 }
 
