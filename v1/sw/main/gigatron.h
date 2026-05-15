@@ -57,12 +57,6 @@ typedef void (*gigatron_rx_cb_t)(int byte);  // byte: 0-255, -1 for timeout
  * outselves about 4us to do the job.
  */
 
-/* Gigatron task configuration */
-#define GIGATRON_TASK_PRIORITY    5
-#define GIGATRON_TASK_STACK       4096
-#define GIGATRON_TASK_CORE        1
-#define GIGATRON_EVENTQUEUE_SIZE  8
-
 #ifdef __cplusplus
 extern "C" {
 #endif

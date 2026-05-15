@@ -1,0 +1,85 @@
+diff --git a/components/esp_hid/Kconfig b/components/esp_hid/Kconfig
+index 619042645c..ece1991e21 100644
+--- a/components/esp_hid/Kconfig
++++ b/components/esp_hid/Kconfig
+@@ -14,4 +14,28 @@ menu "ESP HID"
+         help
+             This is the stack size for the BLE HID task.
+             Default is 4096 bytes.
++
++    config ESPHID_TASK_AFFINITY
++        hex
++        default 0x0 if ESPHID_TASK_AFFINITY_CPU0
++        default 0x1 if ESPHID_TASK_AFFINITY_CPU1
++        default FREERTOS_NO_AFFINITY if ESPHID_TASK_AFFINITY_NO_AFFINITY
++
++    choice ESPHID_TASK_AFFINITY
++        prompt "Event task core affinity"
++        default ESPHID_TASK_AFFINITY_NO_AFFINITY
++        help
++            - "CPU0": esp_hid task is processed by CPU0.
++            - "CPU1": esp_hid task is processed by CPU1.
++            - "No affinity": (default) esp_hid task can be processed by any CPU.
++
++        config ESPHID_TASK_AFFINITY_CPU0
++            bool "CPU0"
++        config ESPHID_TASK_AFFINITY_CPU1
++            bool "CPU1"
++            depends on !FREERTOS_UNICORE
++        config ESPHID_TASK_AFFINITY_NO_AFFINITY
++            bool "No affinity"
++            depends on !FREERTOS_UNICORE
++    endchoice
+ endmenu
+diff --git a/components/esp_hid/src/ble_hidd.c b/components/esp_hid/src/ble_hidd.c
+index c46c3cab92..8ded48ac58 100644
+--- a/components/esp_hid/src/ble_hidd.c
++++ b/components/esp_hid/src/ble_hidd.c
+@@ -972,7 +972,7 @@ esp_err_t esp_ble_hidd_dev_init(esp_hidd_dev_t *dev_p, const esp_hid_device_conf
+         .task_name = "ble_hidd_events",
+         .task_priority = uxTaskPriorityGet(NULL),
+         .task_stack_size = BT_HID_DEVICE_TASK_SIZE_BLE,
+-        .task_core_id = tskNO_AFFINITY
++        .task_core_id = CONFIG_ESPHID_TASK_AFFINITY
+     };
+     ret = esp_event_loop_create(&event_task_args, &s_dev->event_loop_handle);
+     if (ret != ESP_OK) {
+diff --git a/components/esp_hid/src/bt_hidd.c b/components/esp_hid/src/bt_hidd.c
+index 61f421d451..7cab7ba6c9 100644
+--- a/components/esp_hid/src/bt_hidd.c
++++ b/components/esp_hid/src/bt_hidd.c
+@@ -810,7 +810,7 @@ esp_err_t esp_bt_hidd_dev_init(esp_hidd_dev_t *dev_p, const esp_hid_device_confi
+         .task_name = "bt_hidd_events",
+         .task_priority = uxTaskPriorityGet(NULL),
+         .task_stack_size = BT_HID_DEVICE_TASK_SIZE_BT,
+-        .task_core_id = tskNO_AFFINITY
++        .task_core_id = CONFIG_ESPHID_TASK_AFFINITY
+     };
+     ret = esp_event_loop_create(&event_task_args, &s_hidd_param.dev->event_loop_handle);
+     if (ret != ESP_OK) {
+diff --git a/components/esp_hid/src/esp_hidh.c b/components/esp_hid/src/esp_hidh.c
+index 1e841cd663..f3102e1f83 100644
+--- a/components/esp_hid/src/esp_hidh.c
++++ b/components/esp_hid/src/esp_hidh.c
+@@ -86,7 +86,7 @@ esp_err_t esp_hidh_init(const esp_hidh_config_t *config)
+         .task_name = "esp_hidh_events",
+         .task_priority = uxTaskPriorityGet(NULL),
+         .task_stack_size = config->event_stack_size > 0 ? config->event_stack_size : 4096,
+-        .task_core_id = tskNO_AFFINITY
++        .task_core_id = CONFIG_ESPHID_TASK_AFFINITY
+     };
+     esp_event_loop_create(&event_task_args, &s_esp_hidh_event_loop_h);
+     s_esp_hidh_devices_semaphore = xSemaphoreCreateMutex();
+diff --git a/components/esp_hid/src/nimble_hidd.c b/components/esp_hid/src/nimble_hidd.c
+index 6bb00bd525..f7b83c5aa3 100644
+--- a/components/esp_hid/src/nimble_hidd.c
++++ b/components/esp_hid/src/nimble_hidd.c
+@@ -670,7 +670,7 @@ esp_err_t esp_ble_hidd_dev_init(esp_hidd_dev_t *dev_p, const esp_hid_device_conf
+         .task_name = "ble_hidd_events",
+         .task_priority = uxTaskPriorityGet(NULL),
+         .task_stack_size = 4096,
+-        .task_core_id = tskNO_AFFINITY
++        .task_core_id = CONFIG_ESPHID_TASK_AFFINITY
+     };
+     rc = esp_event_loop_create(&event_task_args, &s_dev->event_loop_handle);
+     if (rc != ESP_OK) {

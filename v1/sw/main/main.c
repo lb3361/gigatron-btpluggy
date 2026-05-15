@@ -199,7 +199,6 @@ void app_main(void)
 
     /* 11. Gigatron RX */
     gigatron_init_rx(gigatron_rx_cb);
-
 }
 
 /* Local Variables: */

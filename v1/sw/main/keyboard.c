@@ -213,6 +213,16 @@ void process_giga_keys(keyboard_t *kb,
                 if (bda)
                     nvs_save("KB", bda, &kb->keymap, 1);
             }
+#if CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS
+            if (ascii == 204) {
+                char *buffer = malloc(1024);
+                if (buffer) {
+                    vTaskList(buffer);
+                    ESP_LOGI(TAG, "Task list: \n%s", buffer);
+                    free(buffer);
+                }
+            }
+#endif
             ascii = -1;
         } else {
             if (kb->capslock && ascii >= 'a' && ascii <= 'z')

@@ -20,6 +20,12 @@
 
 static const char *TAG = "GIGA";
 
+/* Gigatron task configuration */
+#define GIGATRON_TASK_PRIORITY    (configMAX_PRIORITIES - 1)
+#define GIGATRON_TASK_STACK       4096
+#define GIGATRON_TASK_CORE        1
+#define GIGATRON_EVENTQUEUE_SIZE  8
+
 /* Task handle */
 static TaskHandle_t s_gigatron_task_handle = NULL;
 
@@ -34,6 +40,15 @@ unsigned hc595framelen = 0;
 
 /* Frame counter */
 int framecount;
+
+/* Debugging isr timing */
+#define DEBUG 1
+#if DEBUG
+int d_missed;
+int d_missedline;
+#endif
+
+
 
 /* Internal queue for event injection */
 static QueueHandle_t giga_event_queue = NULL;
@@ -95,7 +110,13 @@ static void gigatron_isr(void *arg)
         /* Increment videline counter */
         videolines_since_ie += 1;
         videoline += 1;
-
+#if DEBUG
+        /* Count missed hsync pulses */
+        if ((in>>(GIGATRON_SERCLK_GPIO-32)) & 1) {
+            d_missed++;
+            d_missedline = videoline;
+        }
+#endif
         /* Bail out quickly when rom reads serialRaw */
         if (videoline == -27)
             return;
@@ -216,6 +237,15 @@ void gigatron_task(void *arg) {
             {
                 hc595inject = 0xff;
             }
+        /* Debug info */
+#if DEBUG
+        if (framecount % 60 == 0 && d_missed) {
+            ESP_LOGI(TAG,"DBG: Missed hsync pulse (%d times, line=%d)", d_missed, d_missedline);
+            d_missed = 0;
+        }
+        if (videoline > -28-8)
+            ESP_LOGI(TAG,"DBG: Vbl processing ending late (videoline=%d)", videoline);
+#endif
     }
 }
 
@@ -323,6 +353,11 @@ esp_err_t gigatron_init(void) {
 
 /* Receiving bytes from the gigatron */
 
+/* Gigatron task configuration */
+#define GIGATRON_RX_TASK_PRIORITY    5
+#define GIGATRON_RX_TASK_STACK       4096
+#define GIGATRON_RX_TASK_CORE        0
+
 static gigatron_rx_callback_t rx_cb = NULL;
 static TaskHandle_t s_gigatron_rx_task_handle = NULL;
 static rmt_channel_handle_t rx_chan = NULL;
@@ -395,11 +430,11 @@ esp_err_t gigatron_init_rx(gigatron_rx_callback_t cb)
     if (! s_gigatron_rx_task_handle) {
         err = xTaskCreatePinnedToCore(gigatron_rx_task,
                                       "gigatron_rx",
-                                      GIGATRON_TASK_STACK,
+                                      GIGATRON_RX_TASK_STACK,
                                       NULL,
-                                      GIGATRON_TASK_PRIORITY,
+                                      GIGATRON_RX_TASK_PRIORITY,
                                       &s_gigatron_rx_task_handle,
-                                      GIGATRON_TASK_CORE );
+                                      GIGATRON_RX_TASK_CORE );
         if (err != pdPASS) {
             ESP_LOGE(TAG, "Failed to create gigatron rx task: %d", err);
             return ESP_FAIL;
