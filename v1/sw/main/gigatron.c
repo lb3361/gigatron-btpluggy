@@ -18,7 +18,13 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 
-#define DEBUG 1
+
+#if NMI_IRQ_PSEUDOCODE
+
+/* Symbol NMI_IRQ_PSEUDOCODE is not defined and must remain so.
+   This section merely documents what the assembly code NMI handler does.
+   Defining this symbol is only useful to generate assembly code with
+   the C compiler and manually replace the contents of nmi.S. */
 
 gigatron_irq_data_t irq = {
     .hc595ptr = &irq.hc595state,
@@ -30,6 +36,67 @@ gigatron_irq_data_t irq = {
     .loaderframelen = 0
 };
 
+IRAM_ATTR
+void nmi_handler(void)
+{
+    gpio_dev_t *hw = &GPIO;
+    gigatron_irq_data_t *d = &irq;
+
+    /* simulate 74hc595 */
+    uint32_t in = hw->in1.val; // time sensitive
+    uint8_t  ix = *(d->hc595ptr);
+    hw->out_w1ts = d->bytemap[ix];
+    hw->out_w1tc = d->bytemap[ix ^ 0xff];
+    d->hc595state = (d->hc595state << 1) | ((in >> (GIGATRON_SERIN_GPIO-32)) & 1);
+
+    /* Clear interrupt */
+    hw->status1_w1tc.val = (1<<(GIGATRON_SERCLK_GPIO-32));
+
+    /* Increment videoline counter */
+    d->videolines_since_ie += 1;
+    d->videoline += 1;
+    /* Count missed hsync pulses */
+    if ((in>>(GIGATRON_SERCLK_GPIO-32)) & 1)
+        d->missed++;
+    /* Determine next hc595ptr */
+    if (d->videoline == -28) {
+        /* determine next serialraw */
+        if (d->loaderframe && d->loaderframelen > 0) {
+            d->hc595ptr = d->loaderframe;
+            d->hc595ptrlen = d->loaderframelen - 1;
+            d->loaderframelen = 0;
+            d->loaderframe = 0;
+        } else if (d->inject != 0xff) {
+            d->hc595ptr = &d->inject;
+            d->hc595ptrlen = 0;
+        } else {
+            d->hc595ptr = &d->hc595state;
+            d->hc595ptrlen = 0;
+        }
+        /* reset pseudovbl */
+        hw->out1_w1ts.val = (1<<(PSEUDO_VBL_GPIO-32));
+    } else if (d->hc595ptrlen > 0 && d->videolines_since_ie == 1) {
+        /* next byte */
+        d->hc595ptr++;
+        d->hc595ptrlen--;
+    } else {
+        /* pass thru */
+        d->hc595ptr = &d->hc595state;
+        d->hc595ptrlen = 0;
+    }
+    if (d->videoline >= 480) {
+        d->framecount++;
+        d->videoline = -41;
+        /* set pseudovbl */
+        hw->out1_w1tc.val = (1<<(PSEUDO_VBL_GPIO-32));
+    }
+}
+
+/* End of the documentation-only part of the file */
+
+#else
+
+#define DEBUG 1
 
 static const char *TAG = "GIGA";
 
@@ -58,75 +125,29 @@ typedef struct {
 } giga_event_t;
 
 
-/* Gigatron ISR - C version
-   Will this be fast enough or do we
-   need an assembly code NMI routine? */
-
+/* This ISR captures processes the /IE pulse and the PSEUDO_VBL pulses
+   created by the NMI handler to releases the gigatron_task */
 IRAM_ATTR
 static void gigatron_isr(void *arg)
 {
     gpio_dev_t *hw = &GPIO;
-
-    /* SERCLK interrupt */
-    if (( hw->status1.val >> (GIGATRON_SERCLK_GPIO-32)) & 1) {
-
-        /* simulate 74hc595 */
-        uint32_t in = hw->in1.val; // time sensitive
-        uint8_t  ix = *irq.hc595ptr;
-        hw->out_w1ts = irq.bytemap[ix];
-        hw->out_w1tc = irq.bytemap[ix ^ 0xff];
-        irq.hc595state = (irq.hc595state << 1) | ((in >> (GIGATRON_SERIN_GPIO-32)) & 1);
-
-        /* Clear interrupt */
-        hw->status1_w1tc.val = (1<<(GIGATRON_SERCLK_GPIO-32));
-
-        /* Increment videline counter */
-        irq.videolines_since_ie += 1;
-        irq.videoline += 1;
-        /* Count missed hsync pulses */
-#if DEBUG
-        if ((in>>(GIGATRON_SERCLK_GPIO-32)) & 1) {
-            irq.missed++;
-        }
-#endif
-        /* Bail out quickly when rom reads serialRaw */
-        if (irq.videoline == -28) {
-            if (irq.loaderframe && irq.loaderframelen > 0) {
-                irq.hc595ptr = irq.loaderframe;
-                irq.hc595ptrlen = irq.loaderframelen - 1;
-                irq.loaderframelen = 0;
-                irq.loaderframe = 0;
-            } else if (irq.inject != 0xff) {
-                irq.hc595ptr = &irq.inject;
-                irq.hc595ptrlen = 0;
-            } else {
-                irq.hc595ptr = &irq.hc595state;
-                irq.hc595ptrlen = 0;
-            }
-        } else if (irq.hc595ptrlen > 0 && irq.videolines_since_ie == 1) {
-            irq.hc595ptr++;
-            irq.hc595ptrlen--;
-        } else {
-            irq.hc595ptr = &irq.hc595state;
-            irq.hc595ptrlen = 0;
-        }
-        if (irq.videoline >= 480) {
-            irq.framecount++;
-            irq.videoline = -41;
-            BaseType_t woken = pdFALSE;
-            vTaskNotifyGiveFromISR(s_gigatron_task_handle, &woken);
-            portYIELD_FROM_ISR(woken);
-        }
-    }
-        /* IE interrupt */
+    /* IE interrupt */
     if (( hw->status1.val >> (GIGATRON_IE_GPIO-32)) & 1) {
-
         /* Track vsync using /ie assertions */
         if (irq.videolines_since_ie == 521)
             irq.videoline  = -27;
         irq.videolines_since_ie = 0;
         /* Clear IE interrupt */
         hw->status1_w1tc.val = (1<<(GIGATRON_IE_GPIO-32));
+    }
+    /* PSEUDO_VBL interrupt */
+    if (( hw->status1.val >> (PSEUDO_VBL_GPIO-32)) & 1) {
+        /* Release gigatron task */
+        BaseType_t woken = pdFALSE;
+        vTaskNotifyGiveFromISR(s_gigatron_task_handle, &woken);
+        portYIELD_FROM_ISR(woken);
+        /* Clear PSEUDO_VBL interrupt */
+        hw->status1_w1tc.val = (1<<(PSEUDO_VBL_GPIO-32));
     }
 }
 
@@ -159,23 +180,24 @@ void gigatron_post(uint8_t giga_key, uint8_t giga_buttons) {
 
 /* Main Gigatron task running on core 1 */
 void gigatron_task(void *arg) {
-    esp_err_t err;
-
     ESP_LOGI(TAG, "Gigatron task started on core %d", xPortGetCoreID());
 
     /* Setup core1 interrupts */
-    err = esp_intr_alloc(ETS_GPIO_INTR_SOURCE,
-                         ESP_INTR_FLAG_LEVEL3|ESP_INTR_FLAG_IRAM,
-                         gigatron_isr, 0, 0);
-    if (err != ESP_OK)
-        ESP_LOGE(TAG, "Failed to acquire interrupt (%d)", err);
+    ESP_ERROR_CHECK(esp_intr_alloc(ETS_GPIO_NMI_SOURCE,
+                                   ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_NMI,
+                                   NULL, NULL, 0));
+    ESP_ERROR_CHECK(esp_intr_alloc(ETS_GPIO_INTR_SOURCE,
+                                   ESP_INTR_FLAG_LEVEL3|ESP_INTR_FLAG_IRAM,
+                                   gigatron_isr, 0, 0));
 
     /* Make SERCLK and IE core 1 interrupts */
     gpio_dev_t *hw = &GPIO;
-    hw->pin[GIGATRON_SERCLK_GPIO].int_type = GPIO_INTR_NEGEDGE;
-    hw->pin[GIGATRON_SERCLK_GPIO].int_ena = GPIO_LL_APP_CPU_INTR_ENA;
     hw->pin[GIGATRON_IE_GPIO].int_type = GPIO_INTR_POSEDGE;
     hw->pin[GIGATRON_IE_GPIO].int_ena = GPIO_LL_APP_CPU_INTR_ENA;
+    hw->pin[PSEUDO_VBL_GPIO].int_type = GPIO_INTR_NEGEDGE;
+    hw->pin[PSEUDO_VBL_GPIO].int_ena = GPIO_LL_APP_CPU_INTR_ENA;
+    hw->pin[GIGATRON_SERCLK_GPIO].int_type = GPIO_INTR_NEGEDGE;
+    hw->pin[GIGATRON_SERCLK_GPIO].int_ena = GPIO_LL_APP_CPU_NMI_INTR_ENA;
 
     /* Vertical blanking loop */
     while (1) {
@@ -331,6 +353,7 @@ esp_err_t gigatron_init(void) {
     return ESP_OK;
 }
 
+#endif
 
 /* Local Variables: */
 /* mode: c */

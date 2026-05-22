@@ -7,9 +7,9 @@
 
 /*
  * Gigatron Interface Pin Mapping
- * 
+ *
  * ESP32 GPIO Pin Assignments:
- * 
+ *
  * INPUTS (connected to Gigatron board):
  *   - SERCLK: GPIO36 (HSYNC signal from Gigatron VGA)
  *   - /IE:    GPIO37 (Active LOW - Output Enable for level shifter)
@@ -82,7 +82,7 @@ extern gigatron_irq_data_t irq;
 
 /* Initialize Gigatron interface hardware and internal event queue
  * Configures GPIO pins but does not enable interrupts yet.
- * 
+ *
  * Returns:
  *   - ESP_OK on success
  *   - Error code on failure

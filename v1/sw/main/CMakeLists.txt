@@ -7,6 +7,7 @@ set(srcs "main.c"
          "gamepad.c"
          "led.c"
          "gigatron.c"
+         "nmi.S"
          "pluggy.c" )
 
 idf_component_register(SRCS ${srcs}
