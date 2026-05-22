@@ -221,6 +221,7 @@ void process_giga_keys(keyboard_t *kb,
                     ESP_LOGI(TAG, "Task list: \n%s", buffer);
                     free(buffer);
                 }
+                esp_intr_dump(stdout);
             }
 #endif
             ascii = -1;

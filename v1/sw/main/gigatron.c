@@ -18,6 +18,19 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 
+#define DEBUG 1
+
+gigatron_irq_data_t irq = {
+    .hc595ptr = &irq.hc595state,
+    .hc595ptrlen = 0,
+    .hc595state = 0xff,
+    .bytemap = 0,
+    .inject = 0xff,
+    .loaderframe = 0,
+    .loaderframelen = 0
+};
+
+
 static const char *TAG = "GIGA";
 
 /* Gigatron task configuration */
@@ -28,27 +41,6 @@ static const char *TAG = "GIGA";
 
 /* Task handle */
 static TaskHandle_t s_gigatron_task_handle = NULL;
-
-/* Internal state of the simulated 74hc595 */
-uint8_t hc595state;
-uint8_t *hc595ptr = &hc595state;
-
-/* Injected event */
-uint8_t  hc595inject = 0xff;
-uint8_t *hc595framedata = 0;
-unsigned hc595framelen = 0;
-
-/* Frame counter */
-int framecount;
-
-/* Debugging isr timing */
-#define DEBUG 1
-#if DEBUG
-int d_missed;
-int d_missedline;
-#endif
-
-
 
 /* Internal queue for event injection */
 static QueueHandle_t giga_event_queue = NULL;
@@ -66,25 +58,6 @@ typedef struct {
 } giga_event_t;
 
 
-/* Scanline counter videoline ranges from -41 to +479,
-   - negative during vertical blanking.
-   - vsync turns low on row -36 and high on row -28
-   - serial input happens on row -27.
-*/
-
-int videoline;
-int videolines_since_ie;
-
-/* Map bytes to gpio mask */
-static uint32_t bytemap[256];
-
-IRAM_ATTR __attribute__((always_inline))
-static inline void set_bus(gpio_dev_t *hw, uint8_t x) {
-    hw->out_w1ts = bytemap[x];
-    hw->out_w1tc = bytemap[x ^ 0xff];
-}
-
-
 /* Gigatron ISR - C version
    Will this be fast enough or do we
    need an assembly code NMI routine? */
@@ -99,43 +72,47 @@ static void gigatron_isr(void *arg)
 
         /* simulate 74hc595 */
         uint32_t in = hw->in1.val; // time sensitive
-        uint8_t  ix = *hc595ptr;
-        hw->out_w1ts = bytemap[ix];
-        hw->out_w1tc = bytemap[ix ^ 0xff];
-        hc595state = (hc595state << 1) | ((in >> (GIGATRON_SERIN_GPIO-32)) & 1);
+        uint8_t  ix = *irq.hc595ptr;
+        hw->out_w1ts = irq.bytemap[ix];
+        hw->out_w1tc = irq.bytemap[ix ^ 0xff];
+        irq.hc595state = (irq.hc595state << 1) | ((in >> (GIGATRON_SERIN_GPIO-32)) & 1);
 
         /* Clear interrupt */
         hw->status1_w1tc.val = (1<<(GIGATRON_SERCLK_GPIO-32));
 
         /* Increment videline counter */
-        videolines_since_ie += 1;
-        videoline += 1;
-#if DEBUG
+        irq.videolines_since_ie += 1;
+        irq.videoline += 1;
         /* Count missed hsync pulses */
+#if DEBUG
         if ((in>>(GIGATRON_SERCLK_GPIO-32)) & 1) {
-            d_missed++;
-            d_missedline = videoline;
+            irq.missed++;
         }
 #endif
         /* Bail out quickly when rom reads serialRaw */
-        if (videoline == -27)
-            return;
-        if (videoline == -28) {
-            if (hc595framelen && hc595framedata)
-                hc595ptr = hc595framedata;
-            else if (hc595inject != 0xff)
-                hc595ptr = &hc595inject;
-            else
-                hc595ptr = &hc595state;
-        } else if (hc595framelen > 0 && videolines_since_ie == 1) {
-            hc595ptr++;
-            hc595framelen--;
+        if (irq.videoline == -28) {
+            if (irq.loaderframe && irq.loaderframelen > 0) {
+                irq.hc595ptr = irq.loaderframe;
+                irq.hc595ptrlen = irq.loaderframelen - 1;
+                irq.loaderframelen = 0;
+                irq.loaderframe = 0;
+            } else if (irq.inject != 0xff) {
+                irq.hc595ptr = &irq.inject;
+                irq.hc595ptrlen = 0;
+            } else {
+                irq.hc595ptr = &irq.hc595state;
+                irq.hc595ptrlen = 0;
+            }
+        } else if (irq.hc595ptrlen > 0 && irq.videolines_since_ie == 1) {
+            irq.hc595ptr++;
+            irq.hc595ptrlen--;
         } else {
-            hc595ptr = &hc595state;
+            irq.hc595ptr = &irq.hc595state;
+            irq.hc595ptrlen = 0;
         }
-        if (videoline >= 480) {
-            framecount++;
-            videoline = -41;
+        if (irq.videoline >= 480) {
+            irq.framecount++;
+            irq.videoline = -41;
             BaseType_t woken = pdFALSE;
             vTaskNotifyGiveFromISR(s_gigatron_task_handle, &woken);
             portYIELD_FROM_ISR(woken);
@@ -145,9 +122,9 @@ static void gigatron_isr(void *arg)
     if (( hw->status1.val >> (GIGATRON_IE_GPIO-32)) & 1) {
 
         /* Track vsync using /ie assertions */
-        if (videolines_since_ie == 521)
-            videoline  = -27;
-        videolines_since_ie = 0;
+        if (irq.videolines_since_ie == 521)
+            irq.videoline  = -27;
+        irq.videolines_since_ie = 0;
         /* Clear IE interrupt */
         hw->status1_w1tc.val = (1<<(GIGATRON_IE_GPIO-32));
     }
@@ -214,10 +191,10 @@ void gigatron_task(void *arg) {
         else if (giga_event_queue && xQueueReceive(giga_event_queue, &ev, 0) == pdTRUE)
             {
                 if (ev.type == GIGA_EVENT_KEYBOARD) {
-                    hc595inject = ev.code;
+                    irq.inject = ev.code;
                     delay = 2;
                 } else {
-                    hc595inject = ev.code;
+                    irq.inject = ev.code;
                     if (ev.type == GIGA_EVENT_LONG)
                         delay = 150;
                     else if (ev.code == 0xff)
@@ -229,22 +206,21 @@ void gigatron_task(void *arg) {
 #if LOADER_FRAME_INJECTION_NOT_YET_IMPLEMENTED
         else if ( pending_frames )
             {
-                hc595framelen = ...;
-                hc595framedata = ...;
+                irq.loaderframe = ...;
+                irq.loaderframelen = ...;
             }
 #endif
         else if (delay >= 0)
             {
-                hc595inject = 0xff;
+                irq.inject = 0xff;
             }
         /* Debug info */
 #if DEBUG
-        if (framecount % 60 == 0 && d_missed) {
-            ESP_LOGI(TAG,"DBG: Missed hsync pulse (%d times, line=%d)", d_missed, d_missedline);
-            d_missed = 0;
-        }
-        if (videoline > -28-8)
-            ESP_LOGI(TAG,"DBG: Vbl processing ending late (videoline=%d)", videoline);
+        if (irq.framecount % 60 == 0 && irq.missed)
+            ESP_LOGI(TAG,"DBG: Missed hsync pulse (%d times)", irq.missed);
+        if (irq.videoline > -28-8)
+            ESP_LOGI(TAG,"DBG: Vbl processing ending late (videoline=%d)", irq.videoline);
+        irq.missed = 0;
 #endif
     }
 }
@@ -253,7 +229,7 @@ void gigatron_task(void *arg) {
 /* GPIO pin array for outputs */
 /* Initialize the bytemap lookup table
  * Maps 8-bit values to GPIO register bitmasks for fast parallel output. */
-static void init_bytemap(void)
+static esp_err_t init_bytemap(void)
 {
     static const gpio_num_t s_output_pins[] = {
         GIGATRON_QA_GPIO, GIGATRON_QB_GPIO,
@@ -262,6 +238,9 @@ static void init_bytemap(void)
         GIGATRON_QG_GPIO, GIGATRON_QH_GPIO
     };
     /* Precompute all 256 possible byte values */
+    uint32_t *bytemap = malloc(256*sizeof(uint32_t));
+    if (! bytemap)
+        return ESP_FAIL;
     for (int byte = 0; byte < 256; byte++) {
         uint32_t mask = 0;
         for (int bit = 0; bit < 8; bit++)
@@ -270,7 +249,10 @@ static void init_bytemap(void)
         bytemap[byte] = mask;
     }
     ESP_LOGI(TAG, "bytemap initialized with %d entries", 256);
+    irq.bytemap = bytemap;
+    return ESP_OK;
 }
+
 
 
 /* Initialize all Gigatron interface GPIO pins and event queue
@@ -286,21 +268,20 @@ esp_err_t gigatron_init(void) {
         .pin_bit_mask = ((1ULL << GIGATRON_QA_GPIO)|(1ULL << GIGATRON_QB_GPIO)|
                          (1ULL << GIGATRON_QC_GPIO)|(1ULL << GIGATRON_QD_GPIO)|
                          (1ULL << GIGATRON_QE_GPIO)|(1ULL << GIGATRON_QF_GPIO)|
-                         (1ULL << GIGATRON_QG_GPIO)|(1ULL << GIGATRON_QH_GPIO) ),
+                         (1ULL << GIGATRON_QG_GPIO)|(1ULL << GIGATRON_QH_GPIO)|
+                         (1ULL << PSEUDO_VBL_GPIO)),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE
     };
-    err = gpio_config(&cfg_out);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to configure output pins: err=%d", err);
-        return err;
-    }
+    ESP_ERROR_CHECK(gpio_config(&cfg_out));
+    ESP_ERROR_CHECK(gpio_set_direction(PSEUDO_VBL_GPIO, GPIO_MODE_INPUT_OUTPUT));
 
     /* Initialize bytemap for fast GPIO writes */
-    init_bytemap();
-    set_bus(&GPIO, 0xff);
+    ESP_ERROR_CHECK(init_bytemap());
+    GPIO.out_w1ts = irq.bytemap[0xff];
+    GPIO.out1_w1ts.val = (1 << (PSEUDO_VBL_GPIO-32));
 
     /* Configure input pins */
     gpio_config_t cfg_in = {
@@ -349,101 +330,6 @@ esp_err_t gigatron_init(void) {
 
     return ESP_OK;
 }
-
-
-/* Receiving bytes from the gigatron */
-
-/* Gigatron task configuration */
-#define GIGATRON_RX_TASK_PRIORITY    5
-#define GIGATRON_RX_TASK_STACK       4096
-#define GIGATRON_RX_TASK_CORE        0
-
-static gigatron_rx_callback_t rx_cb = NULL;
-static TaskHandle_t s_gigatron_rx_task_handle = NULL;
-static rmt_channel_handle_t rx_chan = NULL;
-static int rx_num_symbols = 0;
-static rmt_symbol_word_t rx_symbols[4];
-static uint8_t rx_byte = 0;
-static int rx_bitcount = 0;
-static int rx_frame = 0;
-
-IRAM_ATTR
-static bool rmt_rx_callback(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *edata, void *user_ctx)
-{
-    rx_num_symbols = edata->num_symbols;
-    BaseType_t woken = pdFALSE;
-    vTaskNotifyGiveFromISR(s_gigatron_rx_task_handle, &woken);
-    return woken == pdTRUE;
-}
-
-void gigatron_rx_task(void *arg) {
-    ESP_LOGI(TAG, "Gigatron RX task started on core %d", xPortGetCoreID());
-    /* create rx channel */
-    rmt_rx_channel_config_t rmt_rx_config = {
-        .clk_src = RMT_CLK_SRC_DEFAULT,   // select source clock
-        .resolution_hz = 80000000,        // 80 MHz tick resolution, i.e., 1 tick = 12.5ns
-        .mem_block_symbols = 64,          // memory block size, 64 * 4 = 256 Bytes
-        .gpio_num = GIGATRON_IE_GPIO,     // GPIO number
-    };
-    ESP_ERROR_CHECK(rmt_new_rx_channel(&rmt_rx_config, &rx_chan));
-    /* set rx channel callback */
-    static rmt_rx_event_callbacks_t cbs = {
-        .on_recv_done = rmt_rx_callback
-    };
-    ESP_ERROR_CHECK(rmt_rx_register_event_callbacks(rx_chan, &cbs, 0));
-    rmt_receive_config_t rmt_recv_config = {
-        .signal_range_min_ns = 100,
-        .signal_range_max_ns = 1000,
-    };
-    ESP_ERROR_CHECK(rmt_enable(rx_chan));
-    /* loop */
-    while (1) {
-        /* start receiving */
-        ESP_ERROR_CHECK(rmt_receive(rx_chan, rx_symbols, sizeof(rx_symbols), &rmt_recv_config));
-        /* wait for pattern */
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        /* decode */
-        rmt_symbol_word_t s0 = rx_symbols[0];
-        rmt_symbol_word_t s1 = rx_symbols[1];
-        if (rx_num_symbols == 2 &&
-            s0.duration0 + s0.duration1 + s1.duration0 < 80 &&
-            s0.level0 == 0 && s0.level1 == 1 && s1.level0 == 0 )
-            {
-                rx_byte = (rx_byte >> 1) | ((s1.duration0 > s0.duration0) ? 0x80 : 0);
-                rx_bitcount++;
-                rx_frame = framecount;
-                if (rx_cb && (rx_bitcount & 7) == 0)
-                    rx_cb(rx_byte);
-            }
-        else if (rx_bitcount && framecount - rx_frame >= 2)
-            {
-                rx_bitcount = 0;
-                if (rx_cb)
-                    rx_cb(-1);
-            }
-    }
-}
-
-esp_err_t gigatron_init_rx(gigatron_rx_callback_t cb)
-{
-    esp_err_t err;
-    if (! s_gigatron_rx_task_handle) {
-        err = xTaskCreatePinnedToCore(gigatron_rx_task,
-                                      "gigatron_rx",
-                                      GIGATRON_RX_TASK_STACK,
-                                      NULL,
-                                      GIGATRON_RX_TASK_PRIORITY,
-                                      &s_gigatron_rx_task_handle,
-                                      GIGATRON_RX_TASK_CORE );
-        if (err != pdPASS) {
-            ESP_LOGE(TAG, "Failed to create gigatron rx task: %d", err);
-            return ESP_FAIL;
-        }
-    }
-    rx_cb = cb;
-    return ESP_OK;
-}
-
 
 
 /* Local Variables: */

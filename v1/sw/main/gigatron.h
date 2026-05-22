@@ -5,9 +5,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
-/* Callback type for receiving bytes from Gigatron */
-typedef void (*gigatron_rx_cb_t)(int byte);  // byte: 0-255, -1 for timeout
-
 /*
  * Gigatron Interface Pin Mapping
  * 
@@ -49,6 +46,8 @@ typedef void (*gigatron_rx_cb_t)(int byte);  // byte: 0-255, -1 for timeout
 #define GIGATRON_QG_GPIO       GPIO_NUM_21
 #define GIGATRON_QH_GPIO       GPIO_NUM_22
 
+#define PSEUDO_VBL_GPIO        GPIO_NUM_32
+
 /* Gigatron Shift Register Timing:
  * SERCLK (HSYNC) goes LOW for approximately 4µs per scanline.  When
  * it goes HIGH, a real 74HC595 nearly instantaneously latches the
@@ -57,9 +56,29 @@ typedef void (*gigatron_rx_cb_t)(int byte);  // byte: 0-255, -1 for timeout
  * outselves about 4us to do the job.
  */
 
+typedef struct gigatron_irq_data_s {
+  uint8_t *hc595ptr;            /* pointer to byte output to the bus */
+  uint8_t  hc595ptrlen;         /* remaining bytes before reverting to hc595state */
+  uint8_t  hc595state;          /* state of simulated 74hc595 */
+  uint16_t missed;              /* debug: missed hsyncs, should remain zero */
+  int videoline;                /* videoline counter */
+  int videolines_since_ie;      /* videolines since last /ie pulse */
+  int framecount;               /* incremented each frame */
+  uint32_t *bytemap;            /* table for setting bus data */
+  /* the following are used to initialize hc595ptr on videoline -28 */
+  uint8_t inject;               /* overrides serialraw when not 0xff */
+  uint8_t *loaderframe;         /* next loader frame to pass */
+  int     loaderframelen;       /* loader frame length, 64 or 65 */
+
+} gigatron_irq_data_t;
+
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* data for the nmi handler */
+extern gigatron_irq_data_t irq;
 
 /* Initialize Gigatron interface hardware and internal event queue
  * Configures GPIO pins but does not enable interrupts yet.
@@ -80,17 +99,6 @@ esp_err_t gigatron_init(void);
  * This is useful to implement ctrl+alt+del for a reset.
  */
 void gigatron_post(uint8_t giga_key, uint8_t giga_buttons);
-
-/* Set callback for receiving bytes from Gigatron.
- * Callback is called with byte (0-255) or -1 if no valid pattern received
- * for more than 2 frames. RMT is initialized when a valid cb is provided.
- * Returns:
- *   - ESP_OK on success
- *   - Error code on failure
- */
-
-typedef void (*gigatron_rx_callback_t)(int byte);
-esp_err_t gigatron_init_rx(gigatron_rx_callback_t cb);
 
 #ifdef __cplusplus
 }

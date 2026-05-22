@@ -15,6 +15,7 @@
 #include "hid.h"
 #include "led.h"
 #include "gigatron.h"
+#include "pluggy.h"
 
 static const char *TAG = "MAIN";
 
@@ -74,7 +75,7 @@ static void gp_event_handler(const gp_state_t *st, void *user_data)
 }
 
 
-static void gigatron_rx_cb(int byte)
+static void pluggy_rx_cb(int byte)
 {
     ESP_LOGI(TAG, "RX callback received %d (%c)", byte,
              (byte >= 32 && byte < 127) ? byte : '?');
@@ -198,7 +199,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Ready. Short press GPIO35 to pair (120s). Long press to clear bonds.");
 
     /* 11. Gigatron RX */
-    gigatron_init_rx(gigatron_rx_cb);
+    pluggy_init(pluggy_rx_cb);
 }
 
 /* Local Variables: */

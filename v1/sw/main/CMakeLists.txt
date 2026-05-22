@@ -6,7 +6,8 @@ set(srcs "main.c"
          "keyboard.c"
          "gamepad.c"
          "led.c"
-         "gigatron.c" )
+         "gigatron.c"
+         "pluggy.c" )
 
 idf_component_register(SRCS ${srcs}
                        INCLUDE_DIRS "."
