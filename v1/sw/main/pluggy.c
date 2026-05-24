@@ -21,7 +21,7 @@ static const char *TAG = "PLUGGY";
 /* Gigatron task configuration */
 #define PLUGGY_RX_TASK_PRIORITY    5
 #define PLUGGY_RX_TASK_STACK       4096
-#define PLUGGY_RX_TASK_CORE        0
+#define PLUGGY_RX_TASK_CORE        1
 
 static pluggy_rx_callback_t rx_cb = NULL;
 static TaskHandle_t s_gigatron_rx_task_handle = NULL;

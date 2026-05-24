@@ -63,7 +63,7 @@ void nmi_handler(void)
         /* determine next serialraw */
         if (d->loaderframe && d->loaderframelen > 0) {
             d->hc595ptr = d->loaderframe;
-            d->hc595ptrlen = d->loaderframelen - 1;
+            d->hc595ptrlen = d->loaderframelen;
             d->loaderframelen = 0;
             d->loaderframe = 0;
         } else if (d->inject != 0xff) {
@@ -73,22 +73,27 @@ void nmi_handler(void)
             d->hc595ptr = &d->hc595state;
             d->hc595ptrlen = 0;
         }
-        /* reset pseudovbl */
-        hw->out1_w1ts.val = (1<<(PSEUDO_VBL_GPIO-32));
-    } else if (d->hc595ptrlen > 0 && d->videolines_since_ie == 1) {
-        /* next byte */
-        d->hc595ptr++;
-        d->hc595ptrlen--;
     } else {
-        /* pass thru */
-        d->hc595ptr = &d->hc595state;
-        d->hc595ptrlen = 0;
-    }
-    if (d->videoline >= 480) {
-        d->framecount++;
-        d->videoline = -41;
-        /* set pseudovbl */
-        hw->out1_w1tc.val = (1<<(PSEUDO_VBL_GPIO-32));
+        if (d->hc595ptrlen > 0 && d->videolines_since_ie == 1) {
+            /* next byte */
+            d->hc595ptr++;
+            d->hc595ptrlen--;
+        }
+        if (d->hc595ptrlen == 0) {
+            /* pass thru */
+            d->hc595ptr = &d->hc595state;
+            d->hc595ptrlen = 0;
+        }
+        if (d->videoline == 0) {
+            /* reset pseudovbl */
+            hw->out1_w1ts.val = (1<<(PSEUDO_VBL_GPIO-32));
+        }
+        if (d->videoline >= 480) {
+            d->framecount++;
+            d->videoline = -41;
+            /* set pseudovbl */
+            hw->out1_w1tc.val = (1<<(PSEUDO_VBL_GPIO-32));
+        }
     }
 }
 
