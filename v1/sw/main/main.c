@@ -199,7 +199,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Ready. Short press GPIO35 to pair (120s). Long press to clear bonds.");
 
     /* 11. Gigatron RX */
-    // pluggy_init(pluggy_rx_cb); // disable for now.
+    pluggy_init(pluggy_rx_cb); // disable for now.
 }
 
 /* Local Variables: */
