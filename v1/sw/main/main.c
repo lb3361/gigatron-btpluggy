@@ -29,13 +29,13 @@ static TaskHandle_t s_button_task_handle;
 static void gap_callback(gap_event_t event, void *param)
 {
     if (gap_is_pairing_active())
-        led_set_persistent(0, 0, 64, 500);
+        led_set_persistent(0, 0, 32, 500);
     else if (hid_get_connected_count() > 0)
-        led_set_persistent(0, 0, 64, 0);
+        led_set_persistent(0, 0, 32, 0);
     else
         led_set_persistent(0, 0, 0, 0);
     if  (event == GAP_EVT_DEVICE_CONNECTED)
-        led_set_transient(0, 64, 0, 1000);
+        led_set_transient(0, 32, 0, 1000);
 }
 
 static void hid_conn_cb(esp_hidh_dev_t *dev, bool connected)
@@ -199,7 +199,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Ready. Short press GPIO35 to pair (120s). Long press to clear bonds.");
 
     /* 11. Gigatron RX */
-    pluggy_init(pluggy_rx_cb);
+    // pluggy_init(pluggy_rx_cb); // disable for now.
 }
 
 /* Local Variables: */
