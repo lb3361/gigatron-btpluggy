@@ -160,12 +160,13 @@ void app_main(void)
 
     /* 4. Bluedroid */
     esp_bluedroid_config_t bd_cfg = BT_BLUEDROID_INIT_CONFIG_DEFAULT();
+    bd_cfg.ssp_en = true;
     ESP_ERROR_CHECK(esp_bluedroid_init_with_cfg(&bd_cfg));
     ESP_ERROR_CHECK(esp_bluedroid_enable());
 
     /* 5. Device name */
-    esp_bt_gap_set_device_name("ESP32-HID-Host");
-    esp_ble_gap_set_device_name("ESP32-HID-Host");
+    esp_bt_gap_set_device_name("BtPluggy");
+    esp_ble_gap_set_device_name("BtPluggy");
 
     /* 6. GAP layer */
     ESP_ERROR_CHECK(gap_init(gap_callback));

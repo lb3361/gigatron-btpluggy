@@ -491,13 +491,9 @@ static void connect_scan_results(void)
                  r->transport == ESP_HID_TRANSPORT_BT ? "BT" : "BLE",
                  ESP_BD_ADDR_HEX(r->bda));
 
-        /* Stop scanning */
+        /* Stop pairing */
         esp_timer_stop(s_pairing_timer);
-#if CONFIG_BT_BLE_ENABLED
-        esp_ble_gap_stop_scanning();
-#endif
 #if CONFIG_BT_HID_HOST_ENABLED
-        esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
         if (s_state == S_PAIRING)
             if (r->transport == ESP_HID_TRANSPORT_BT && is_bt_bonded(r->bda))
                esp_bt_gap_remove_bond_device(r->bda);
@@ -558,14 +554,17 @@ esp_err_t gap_init(gap_event_cb_t callback)
     ESP_RETURN_ON_ERROR(
         esp_bt_gap_register_callback(bt_gap_event_handler), TAG, "bt gap cb");
 
-    /* SSP with IO_CAP_NONE → just-works */
+    /* SSP IO Capabilities.
+     * Using CAP_IO causes  ESP_BT_GAP_CFM_REQ_EVT.
+     * But is it still true if the other device says CAP_NONE? */
     esp_bt_sp_param_t sp_type = ESP_BT_SP_IOCAP_MODE;
-    esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_NONE;
+    esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_IO;
     esp_bt_gap_set_security_param(sp_type, &iocap, sizeof(iocap));
 
-    /* Legacy PIN fallback */
+    /* Legacy PIN.
+     * Using variable type causes ESP_BT_GAP_PIN_REQ_EVT. */
     esp_bt_pin_code_t pin = {0};
-    esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, pin);
+    esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_VARIABLE, 4, pin);
 
     /* Connectable but not discoverable */
     esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
@@ -621,9 +620,6 @@ esp_err_t gap_start_pairing(uint32_t timeout_seconds)
         
     case S_IDLE:
         s_state = S_PAIRING;
-#if CONFIG_BT_HID_HOST_ENABLED
-        esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
-#endif
         esp_timer_start_once(s_pairing_timer, timeout_seconds * 1000000ULL);
         ESP_LOGI(TAG, ">>> PAIRING MODE ACTIVE (%"PRIu32"s) <<<", timeout_seconds);
         if (s_event_cb) s_event_cb(GAP_EVT_PAIRING_START, NULL);
@@ -641,7 +637,7 @@ esp_err_t gap_stop_pairing(void)
     if (s_state == S_PAIRING) {
         esp_timer_stop(s_pairing_timer);
 #if CONFIG_BT_HID_HOST_ENABLED
-        esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
+        esp_bt_gap_cancel_discovery();
 #endif
 #if CONFIG_BT_BLE_ENABLED
         esp_ble_gap_stop_scanning();
