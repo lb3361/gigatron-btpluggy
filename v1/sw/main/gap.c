@@ -30,10 +30,10 @@ static volatile enum gap_state_t {
     S_CONNECTING                /* connecting with the intention to pair */
 } s_state;
 
-
 static gap_event_cb_t s_event_cb;
 static esp_timer_handle_t s_pairing_timer;
 static TaskHandle_t s_scan_task_handle;
+static int s_pause_ble_scans;
 
 /* ── scan results ──────────────────────────────────────────────────── */
 
@@ -286,6 +286,14 @@ static void bt_gap_event_handler(esp_bt_gap_cb_event_t event,
         ESP_LOGD(TAG, "BT mode change: %d", param->mode_chg.mode);
         break;
 
+    case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
+        if (param->acl_conn_cmpl_stat.stat == ESP_OK && s_state == S_IDLE) {
+            ESP_LOGI(TAG, "BT reconnection " ESP_BD_ADDR_STR,
+                     ESP_BD_ADDR_HEX(param->acl_conn_cmpl_stat.bda));
+            s_pause_ble_scans = 20;
+        }
+        break;
+
     default:
         ESP_LOGD(TAG, "BT GAP event %d", event);
         break;
@@ -524,6 +532,8 @@ static void scan_task(void *arg)
         clear_scan_results();
         if (s_state == S_PAIRING)
             do_scan(6, ESP_BT_MODE_BTDM);
+        else if (s_pause_ble_scans > 0)
+            s_pause_ble_scans -= 1;
         else if (unconnected_ble_bonded_count() > 0)
             do_scan(3, ESP_BT_MODE_BLE);
         if (s_scan_result_count > 0)
@@ -642,10 +652,11 @@ esp_err_t gap_stop_pairing(void)
 #if CONFIG_BT_BLE_ENABLED
         esp_ble_gap_stop_scanning();
 #endif
+        ESP_LOGI(TAG, ">>> PAIRING MODE ENDED <<<");
+        if (s_event_cb)
+            s_event_cb(GAP_EVT_PAIRING_END, NULL);
     }
     s_state = S_IDLE;
-    ESP_LOGI(TAG, ">>> PAIRING MODE ENDED <<<");
-    if (s_event_cb) s_event_cb(GAP_EVT_PAIRING_END, NULL);
     return ESP_OK;
 }
 
