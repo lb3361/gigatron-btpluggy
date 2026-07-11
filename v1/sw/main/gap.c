@@ -287,9 +287,12 @@ static void bt_gap_event_handler(esp_bt_gap_cb_event_t event,
         break;
 
     case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
-        if (param->acl_conn_cmpl_stat.stat == ESP_OK && s_state == S_IDLE) {
+        if (param->acl_conn_cmpl_stat.stat == ESP_OK
+            && is_bt_bonded(param->acl_conn_cmpl_stat.bda)
+            && s_state == S_IDLE ) {
             ESP_LOGI(TAG, "BT reconnection " ESP_BD_ADDR_STR,
                      ESP_BD_ADDR_HEX(param->acl_conn_cmpl_stat.bda));
+            /* pause ble activity to possibly help */
             s_pause_ble_scans = 20;
         }
         break;
