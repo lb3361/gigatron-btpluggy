@@ -537,8 +537,10 @@ static void scan_task(void *arg)
             do_scan(6, ESP_BT_MODE_BTDM);
         else if (s_pause_ble_scans > 0)
             s_pause_ble_scans -= 1;
+#if CONFIG_BT_BLE_ENABLED
         else if (unconnected_ble_bonded_count() > 0)
             do_scan(3, ESP_BT_MODE_BLE);
+#endif
         if (s_scan_result_count > 0)
             connect_scan_results();
     }
@@ -685,7 +687,6 @@ int gap_get_bonded_count(void)
 esp_err_t gap_clear_all_bonds(void)
 {
     ESP_LOGW(TAG, "Clearing all bonds");
-
 #if CONFIG_BT_HID_HOST_ENABLED
     {
         int count = esp_bt_gap_get_bond_device_num();
@@ -701,7 +702,6 @@ esp_err_t gap_clear_all_bonds(void)
         }
     }
 #endif
-
 #if CONFIG_BT_BLE_ENABLED
     {
         int count = esp_ble_get_bond_device_num();
@@ -717,10 +717,8 @@ esp_err_t gap_clear_all_bonds(void)
         }
     }
 #endif
-
     /* Also clear any saved gamepad profiles */
     nvs_clear_all();
-
     ESP_LOGI(TAG, "All bonds cleared");
     return ESP_OK;
 }

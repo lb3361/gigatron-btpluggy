@@ -130,6 +130,14 @@ static void button_task(void *arg)
 
 /* ── app_main ──────────────────────────────────────────────────────── */
 
+#if CONFIG_BTDM_CTRL_MODE_BTDM
+# define BT_CTRL_MODE ESP_BT_MODE_BTDM
+#elif CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY
+# define BT_CTRL_MODE ESP_BT_MODE_CLASSIC_BT
+#else
+# define BT_CTRL_MODE ESP_BT_MODE_BLE
+#endif
+
 void app_main(void)
 {
     /* 0. Gigatron interface init */
@@ -148,15 +156,10 @@ void app_main(void)
     ESP_ERROR_CHECK(led_init());
 
     /* 3. BT controller — dual mode */
-#if CONFIG_IDF_TARGET_ESP32
-    esp_bt_mode_t mode = ESP_BT_MODE_BTDM;
-#else
-    esp_bt_mode_t mode = ESP_BT_MODE_BLE;
-#endif
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-    bt_cfg.mode = mode;
+    bt_cfg.mode = BT_CTRL_MODE;
     ESP_ERROR_CHECK(esp_bt_controller_init(&bt_cfg));
-    ESP_ERROR_CHECK(esp_bt_controller_enable(mode));
+    ESP_ERROR_CHECK(esp_bt_controller_enable(BT_CTRL_MODE));
 
     /* 4. Bluedroid */
     esp_bluedroid_config_t bd_cfg = BT_BLUEDROID_INIT_CONFIG_DEFAULT();
@@ -165,9 +168,13 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_bluedroid_enable());
 
     /* 5. Device name */
+#if CONFIG_BT_HID_HOST_ENABLED
     esp_bt_gap_set_device_name("BtPluggy");
+#endif
+#if CONFIG_BT_BLE_ENABLED
     esp_ble_gap_set_device_name("BtPluggy");
-
+#endif
+    
     /* 6. GAP layer */
     ESP_ERROR_CHECK(gap_init(gap_callback));
 
