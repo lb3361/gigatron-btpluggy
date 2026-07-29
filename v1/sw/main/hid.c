@@ -213,11 +213,13 @@ static void hidh_event_handler(void *arg, esp_event_base_t base,
                 s_conn_cb(p->close.dev, false);
         }
         esp_hidh_dev_free(p->close.dev);
+#if EXPERIMENTAL_REBOOT_WHEN_LAST_DEVICE_RECONNECTS
         /* reboot when last device disconnects (rejuvenate) */
         if (s_connected_count == 0) {
             ESP_LOGI(TAG, "Last device disconnected: reboot");
             esp_restart();
         }
+#endif
         break;
     }
 
