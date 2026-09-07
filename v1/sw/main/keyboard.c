@@ -35,6 +35,7 @@ struct keyboard_s {
     uint8_t  prev_keys[KB_MAX_KEYS];
     uint8_t  curr_keys[KB_MAX_KEYS];
     uint8_t  curr_key_count;
+    uint8_t  last_giga_key;
 
     /* keymap state */
     uint8_t  keymap;
@@ -204,6 +205,7 @@ void process_giga_keys(keyboard_t *kb,
     
     /* ctrl */
     if (ascii >= 0) {
+
         if (ascii >= 193 && ascii <= 204) { // Fn
             if (ctrl && alt && ascii < 193 + nrKeymaps) {
                 // Ctrl+Alt+Fn : switch keymap
@@ -241,8 +243,6 @@ void process_giga_keys(keyboard_t *kb,
             }
         }
     }
-    if (ascii >= 0) 
-        ev->giga_key = (uint8_t)ascii;
     
     /* buttons */
     uint8_t btns = 0;
@@ -255,14 +255,22 @@ void process_giga_keys(keyboard_t *kb,
         if (scan == 0x4C && ctrl && alt)
             ctrlaltdel = 1;
     }
-    if (ctrlaltdel && btns == 128) {
-        ev->giga_buttons = 16 ^ 0xff;
-        ev->giga_key = 16 ^ 0xff;
-    } else if (btns) {
+
+    /* conclude */
+    if (ctrlaltdel && btns == 128)
+        ev->giga_buttons = ev->giga_key = 16 ^ 0xff;
+    else if (btns)
         ev->giga_buttons = btns ^ 0xff;
+    else if (ev->type == KB_KEY_DOWN && ascii >= 0)
+        kb->last_giga_key = ev->giga_key = ascii;
+    else if (ev->type == KB_KEY_UP && kb->curr_key_count == 0)
         ev->giga_key = 0xff;
-    }
-    /* Callback */
+    else if (ev->type == KB_KEY_UP && ascii >= 0 && ascii == kb->last_giga_key)
+        ev->giga_key = 0xff;
+    else
+        return;
+
+    /* callback */
     if (kb->cb)
         kb->cb(ev, kb->user_data);
 }

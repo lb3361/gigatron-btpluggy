@@ -31,7 +31,20 @@ typedef struct {
 #define KB_MOD_RALT    (1 << 6)
 #define KB_MOD_RGUI    (1 << 7)
 
-typedef void (*kb_event_cb_t)(const kb_event_t *event, void *user_data);
+/* Keyboard callback after gigatron-specific processing.
+   - The callback is invoked whenever the set of depressed button keys
+     changes.  Field ev->giga_buttons represents this set in negative
+     logic.  Value 0xff means that no button key is depressed.
+   - The callback is also invoked whenever a key press indicates a
+     valid ascii code with no button key depressed. The ascii code is
+     provided in ev->giga_key.  When the last reported key is
+     released, the callback is called with both ev->giga_buttons and
+     ev->giga_key equal to 0xff.
+   - When the user pressed ctrl+alt+del, the callback is invoked with
+     both ev->giga_buttons and ev->giga_key equal to 0xef.
+   All other keyboard events are either discarded or processed
+   internally.  For instance ctrl+alt+Fn selects keymap n-1. */
+typedef void (*kb_event_cb_t)(const kb_event_t *ev, void *user_data);
 
 /* ── opaque handle ────────────────────────────────────────────────── */
 

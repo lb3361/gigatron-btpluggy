@@ -58,7 +58,7 @@ static void kb_event_handler(const kb_event_t *ev, void *user_data)
              ev->scancode, ev->modifiers, ev->giga_buttons, ev->giga_key, c);
     
     /* Post events into Gigatron interface */
-    gigatron_post((ev->type == KB_KEY_DOWN) ? ev->giga_key : 0xff, ev->giga_buttons);
+    gigatron_post(ev->giga_key, ev->giga_buttons);
 }
 
 static void gp_event_handler(const gp_state_t *st, void *user_data)

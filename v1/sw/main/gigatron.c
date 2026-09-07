@@ -169,14 +169,10 @@ void gigatron_post(uint8_t giga_key, uint8_t giga_buttons) {
             xQueueSend(giga_event_queue, &ev, pdMS_TO_TICKS(10));
             ev.type = GIGA_EVENT_NONE;
         }
-        if (giga_key != 0xff) {
-            ev.type = GIGA_EVENT_KEYBOARD;
-            ev.code = giga_key;
-            xQueueSend(giga_event_queue, &ev, pdMS_TO_TICKS(10));
-        }
-    } else if (ev.type == GIGA_EVENT_LONG && ev.code == giga_buttons) {
-        /* pass */
-    } else {
+        ev.type = GIGA_EVENT_KEYBOARD;
+        ev.code = giga_key;
+        xQueueSend(giga_event_queue, &ev, pdMS_TO_TICKS(10));
+    } else if (! (ev.type == GIGA_EVENT_LONG && ev.code == giga_buttons)) {
         ev.type = (giga_buttons != giga_key) ? GIGA_EVENT_GAMEPAD : GIGA_EVENT_LONG;
         ev.code = giga_buttons;
         xQueueSend(giga_event_queue, &ev, pdMS_TO_TICKS(10));
@@ -224,10 +220,6 @@ void gigatron_task(void *arg) {
                     irq.inject = ev.code;
                     if (ev.type == GIGA_EVENT_LONG)
                         delay = 150;
-                    else if (ev.code == 0xff)
-                        delay = 0;
-                    else
-                        delay = -1;
                 }
             }
 #if LOADER_FRAME_INJECTION_NOT_YET_IMPLEMENTED
@@ -237,10 +229,6 @@ void gigatron_task(void *arg) {
                 irq.loaderframelen = ...;
             }
 #endif
-        else if (delay >= 0)
-            {
-                irq.inject = 0xff;
-            }
         /* Debug info */
 #if DEBUG
         if (irq.framecount % 60 == 0 && irq.missed)
