@@ -204,9 +204,9 @@ void process_giga_keys(keyboard_t *kb,
     
     /* ctrl */
     if (ascii >= 0) {
-        if (ctrl && alt && ascii >= 193 && ascii <= 204) { // CTRL+ALT+Fn
-            // switch keymap
-            if (ascii < 193 + nrKeymaps) {
+        if (ascii >= 193 && ascii <= 204) { // Fn
+            if (ctrl && alt && ascii < 193 + nrKeymaps) {
+                // Ctrl+Alt+Fn : switch keymap
                 kb->keymap = ascii - 193;
                 const uint8_t *bda = esp_hidh_dev_bda_get(dev);
                 ESP_LOGI(TAG, "Switch to keymap %d", kb->keymap);
@@ -214,7 +214,8 @@ void process_giga_keys(keyboard_t *kb,
                     nvs_save("KB", bda, &kb->keymap, 1);
             }
 #if CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS
-            if (ascii == 204) {
+            if (ctrl && alt && ascii == 204) {
+                // Ctrl+Alt+F12 : display task list
                 char *buffer = malloc(1024);
                 if (buffer) {
                     vTaskList(buffer);
@@ -226,9 +227,11 @@ void process_giga_keys(keyboard_t *kb,
 #endif
             ascii = -1;
         } else {
+            // Caps lock 
             if (kb->capslock && ascii >= 'a' && ascii <= 'z')
                 ascii += 'A' - 'a';
-            else if (ctrl) {
+            if (ctrl) {
+                // Control keys
                 if (ascii == '?')
                     ascii = 127;
                 else if (ascii == '6' || ascii == '^' || ascii == ' ')
