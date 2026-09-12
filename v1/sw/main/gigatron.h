@@ -98,7 +98,12 @@ esp_err_t gigatron_init(void);
  * When giga_buttons == giga_key != 0xff, the code is maintained for 150 frames.
  * This is useful to implement ctrl+alt+del for a reset.
  */
-void gigatron_post(uint8_t giga_key, uint8_t giga_buttons);
+void gigatron_post_input(uint8_t giga_key, uint8_t giga_buttons);
+
+/* Post a loader frame for transmission to the Gigatron.
+ * Caller retains ownership of mallocated pointer `frame`
+ * until this function returns ESP_OK. */
+esp_err_t gigatron_post_frame(const uint8_t *frame, size_t length);
 
 #ifdef __cplusplus
 }
