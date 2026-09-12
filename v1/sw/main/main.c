@@ -58,7 +58,7 @@ static void kb_event_handler(const kb_event_t *ev, void *user_data)
              ev->scancode, ev->modifiers, ev->giga_buttons, ev->giga_key, c);
     
     /* Post events into Gigatron interface */
-    gigatron_post(ev->giga_key, ev->giga_buttons);
+    gigatron_post_input(ev->giga_key, ev->giga_buttons);
 }
 
 static void gp_event_handler(const gp_state_t *st, void *user_data)
@@ -71,7 +71,7 @@ static void gp_event_handler(const gp_state_t *st, void *user_data)
              st->raw_buttons, st->giga_buttons);
 
     /* Post gamepad event into Gigatron interface */
-    gigatron_post(0xFF, st->giga_buttons);
+    gigatron_post_input(0xFF, st->giga_buttons);
 }
 
 

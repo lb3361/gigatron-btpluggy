@@ -114,20 +114,21 @@ static const char *TAG = "GIGA";
 /* Task handle */
 static TaskHandle_t s_gigatron_task_handle = NULL;
 
-/* Internal queue for event injection */
-static QueueHandle_t giga_event_queue = NULL;
+/* Event injection queues */
+static QueueHandle_t input_event_queue = NULL;
+static QueueHandle_t loader_frame_queue = NULL;
 
 typedef enum {
-    GIGA_EVENT_NONE    = 0,
-    GIGA_EVENT_KEYBOARD,
-    GIGA_EVENT_GAMEPAD,
-    GIGA_EVENT_LONG,
-} giga_event_type_t;
+    INPUT_EVENT_NONE    = 0,
+    INPUT_EVENT_KEYBOARD,
+    INPUT_EVENT_GAMEPAD,
+    INPUT_EVENT_LONG,
+} input_event_type_t;
 
 typedef struct {
-    giga_event_type_t type;
+    input_event_type_t type;
     uint8_t code;
-} giga_event_t;
+} input_event_t;
 
 
 /* This ISR captures processes the /IE pulse and the PSEUDO_VBL pulses
@@ -157,26 +158,57 @@ static void gigatron_isr(void *arg)
 }
 
 /* Post keyboard and gamepad events into the Gigatron interface. */
-void gigatron_post(uint8_t giga_key, uint8_t giga_buttons) {
-    static giga_event_t ev = { .type = GIGA_EVENT_NONE };
+void gigatron_post_input(uint8_t giga_key, uint8_t giga_buttons) {
+    static input_event_t ev = { .type = INPUT_EVENT_NONE };
 
-    if (! giga_event_queue) {
+    if (! input_event_queue) {
         return;
     } else if (giga_buttons == 0xff) {
-        if (ev.type == GIGA_EVENT_GAMEPAD) {
-            ev.type = GIGA_EVENT_KEYBOARD;
+        if (ev.type == INPUT_EVENT_GAMEPAD) {
+            ev.type = INPUT_EVENT_KEYBOARD;
             ev.code = 0xff;
-            xQueueSend(giga_event_queue, &ev, pdMS_TO_TICKS(10));
-            ev.type = GIGA_EVENT_NONE;
+            xQueueSend(input_event_queue, &ev, pdMS_TO_TICKS(10));
+            ev.type = INPUT_EVENT_NONE;
         }
-        ev.type = GIGA_EVENT_KEYBOARD;
+        ev.type = INPUT_EVENT_KEYBOARD;
         ev.code = giga_key;
-        xQueueSend(giga_event_queue, &ev, pdMS_TO_TICKS(10));
-    } else if (! (ev.type == GIGA_EVENT_LONG && ev.code == giga_buttons)) {
-        ev.type = (giga_buttons != giga_key) ? GIGA_EVENT_GAMEPAD : GIGA_EVENT_LONG;
+        xQueueSend(input_event_queue, &ev, pdMS_TO_TICKS(10));
+    } else if (! (ev.type == INPUT_EVENT_LONG && ev.code == giga_buttons)) {
+        ev.type = (giga_buttons != giga_key) ? INPUT_EVENT_GAMEPAD : INPUT_EVENT_LONG;
         ev.code = giga_buttons;
-        xQueueSend(giga_event_queue, &ev, pdMS_TO_TICKS(10));
+        xQueueSend(input_event_queue, &ev, pdMS_TO_TICKS(10));
     }
+}
+
+/**
+ * Post a loader frame for transmission to the Gigatron.
+ * Caller retains ownership of `frame` until this function returns ESP_OK.
+ * The frame data must remain valid until the next VBL after transmission starts.
+ *
+ * @param frame Pointer to the frame data (64 or 65 bytes). Caller must not free this until transmission is complete.
+ * @param length Length of the frame (must be 64 or 65).
+ * @return
+ *   - ESP_OK on success
+ *   - ESP_ERR_INVALID_ARG if length is not 64 or 65
+ *   - ESP_ERR_NO_MEM if queue is full or allocation fails
+ */
+esp_err_t gigatron_post_frame(const uint8_t *frame, size_t length) {
+    if (!loader_frame_queue) {
+        ESP_LOGE(TAG, "Loader frame queue not initialized");
+        return ESP_FAIL;
+    }
+
+    if (!frame || (length != 64 && length != 65)) {
+        ESP_LOGE(TAG, "Invalid frame or length (must be 64 or 65): %p, %zu", frame, length);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (xQueueSend(loader_frame_queue, &frame, pdMS_TO_TICKS(100)) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to enqueue loader frame (queue full or timeout)");
+        return ESP_ERR_NO_MEM;
+    }
+
+    return ESP_OK;
 }
 
 /* Main Gigatron task running on core 1 */
@@ -205,20 +237,20 @@ void gigatron_task(void *arg) {
         /* Released on VBL */
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         /* Process event injection state machine */
-        giga_event_t ev;
+        input_event_t ev;
         static int delay = 0;
         if (delay > 0)
             {
                 delay--;
             }
-        else if (giga_event_queue && xQueueReceive(giga_event_queue, &ev, 0) == pdTRUE)
+        else if (input_event_queue && xQueueReceive(input_event_queue, &ev, 0) == pdTRUE)
             {
-                if (ev.type == GIGA_EVENT_KEYBOARD) {
+                if (ev.type == INPUT_EVENT_KEYBOARD) {
                     irq.inject = ev.code;
                     delay = 2;
                 } else {
                     irq.inject = ev.code;
-                    if (ev.type == GIGA_EVENT_LONG)
+                    if (ev.type == INPUT_EVENT_LONG)
                         delay = 150;
                 }
             }
@@ -315,9 +347,9 @@ esp_err_t gigatron_init(void) {
     }
 
     /* Create event queue */
-    if (giga_event_queue == NULL) {
-        giga_event_queue = xQueueCreate(GIGATRON_EVENTQUEUE_SIZE, sizeof(giga_event_t));
-        if (giga_event_queue == NULL) {
+    if (input_event_queue == NULL) {
+        input_event_queue = xQueueCreate(GIGATRON_EVENTQUEUE_SIZE, sizeof(input_event_t));
+        if (input_event_queue == NULL) {
             ESP_LOGE(TAG, "Failed to create event queue");
             return ESP_FAIL;
         }
@@ -342,6 +374,15 @@ esp_err_t gigatron_init(void) {
     ESP_LOGI(TAG, "  /IE:    GPIO%d (INPUT)", GIGATRON_IE_GPIO);
     ESP_LOGI(TAG, "  SERIN:  GPIO%d (INPUT)", GIGATRON_SERIN_GPIO);
     ESP_LOGI(TAG, "  Q0-Q7:  GPIO%d-GPIO%d (OUTPUT)", GIGATRON_QA_GPIO, GIGATRON_QH_GPIO);
+
+    /* Create loader frame queue */
+    if (loader_frame_queue == NULL) {
+        loader_frame_queue = xQueueCreate(GIGATRON_LOADER_FRAME_QUEUE_SIZE, sizeof(const uint8_t *));
+        if (loader_frame_queue == NULL) {
+            ESP_LOGE(TAG, "Failed to create loader frame queue");
+            return ESP_FAIL;
+        }
+    }
 
     return ESP_OK;
 }

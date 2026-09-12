@@ -98,7 +98,26 @@ esp_err_t gigatron_init(void);
  * When giga_buttons == giga_key != 0xff, the code is maintained for 150 frames.
  * This is useful to implement ctrl+alt+del for a reset.
  */
-void gigatron_post(uint8_t giga_key, uint8_t giga_buttons);
+void gigatron_post_input(uint8_t giga_key, uint8_t giga_buttons);
+
+/**
+ * Post a loader frame for transmission to the Gigatron.
+ * Caller retains ownership of `frame` until this function returns ESP_OK.
+ * The frame data must remain valid until the next VBL after transmission starts.
+ *
+ * This function will wait up to 100ms for queue space if necessary.
+ *
+ * @param frame Pointer to the frame data (64 or 65 bytes). Caller must not free this until transmission is complete.
+ * @param length Length of the frame (must be 64 or 65).
+ * @return
+ *   - ESP_OK on success
+ *   - ESP_ERR_INVALID_ARG if length is not 64 or 65
+ *   - ESP_ERR_NO_MEM if queue is full after waiting
+ */
+esp_err_t gigatron_post_frame(const uint8_t *frame, size_t length);
+
+/* Queue for loader frames */
+#define GIGATRON_LOADER_FRAME_QUEUE_SIZE 4
 
 #ifdef __cplusplus
 }
