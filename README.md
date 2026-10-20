@@ -1,6 +1,6 @@
 # BtPluggy
 
-See the forumn post [here](https://forum.gigatron.io/viewtopic.php?t=637) or [here](https://forum.gigatronttl.eu/viewtopic.php?t=637).
+See the forumn post [here](https://forum.gigatronttl.eu/viewtopic.php?t=637) or [here](https://forum.gigatronttl.eu/viewtopic.php?t=637).
 
 
 This ESP32-based board plugs into the socket of the 74HC595 on the Gigatron mainboard. It simulates the shift register well enough to make the gigatron happy. One can still attach anything to the gamepad connector and everything work as before. The board also acts as a bluetooth host for keyboards and gamepads, injecting keystrokes and button presses into the Gigatron input port.
