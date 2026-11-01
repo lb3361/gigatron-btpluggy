@@ -97,14 +97,24 @@ esp_err_t gigatron_init(void);
  * Button combination are maintained until all buttons are released.
  * When giga_buttons == giga_key != 0xff, the code is maintained for 150 frames.
  * This is useful to implement ctrl+alt+del for a reset.
+ * Blocks up to ticks_to_wait for room in the event queue.
+ * Returns ESP_OK, or ESP_ERR_TIMEOUT if the queue stayed full.
  */
-void gigatron_post_input(uint8_t giga_key, uint8_t giga_buttons);
+esp_err_t gigatron_post_input(uint8_t giga_key, uint8_t giga_buttons,
+                              TickType_t ticks_to_wait);
 
 /* Post a loader frame for transmission to the Gigatron.
  * Caller retains ownership of mallocated pointer `frame`
- * until this function returns ESP_OK. */
-esp_err_t gigatron_post_frame(const uint8_t *frame, size_t length);
+ * until this function returns ESP_OK.
+ * Blocks up to ticks_to_wait for room in the frame queue.
+ * Returns ESP_OK, or an error code on invalid input or timeout. */
+esp_err_t gigatron_post_frame(const uint8_t *frame, size_t length,
+                              TickType_t ticks_to_wait);
 
+/* Handles of the input and frame queues */
+  extern QueueHandle_t input_event_queue;
+  extern QueueHandle_t loader_frame_queue;
+  
 #ifdef __cplusplus
 }
 #endif

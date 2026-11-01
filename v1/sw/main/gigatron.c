@@ -118,8 +118,8 @@ static const char *TAG = "GIGA";
 static TaskHandle_t s_gigatron_task_handle = NULL;
 
 /* Event injection queues */
-static QueueHandle_t input_event_queue = NULL;
-static QueueHandle_t loader_frame_queue = NULL;
+QueueHandle_t input_event_queue = NULL;
+QueueHandle_t loader_frame_queue = NULL;
 static SemaphoreHandle_t input_event_mutex = NULL;
 
 typedef enum {
@@ -167,35 +167,37 @@ static void gigatron_isr(void *arg)
 }
 
 /* Post keyboard and gamepad events into the Gigatron interface. */
-void gigatron_post_input(uint8_t giga_key, uint8_t giga_buttons) {
+esp_err_t gigatron_post_input(uint8_t giga_key, uint8_t giga_buttons, TickType_t ticks_to_wait) {
     static input_event_t ev = { .type = INPUT_EVENT_NONE };
+    BaseType_t sent = pdTRUE;
 
     if (! input_event_queue) {
-        return;
+        return ESP_ERR_INVALID_STATE;
     }
     xSemaphoreTake(input_event_mutex, portMAX_DELAY);
     if (giga_buttons == 0xff) {
         if (ev.type == INPUT_EVENT_GAMEPAD) {
             ev.type = INPUT_EVENT_KEYBOARD;
             ev.code = 0xff;
-            xQueueSend(input_event_queue, &ev, pdMS_TO_TICKS(10));
+            xQueueSend(input_event_queue, &ev, ticks_to_wait);
             ev.type = INPUT_EVENT_NONE;
         }
         ev.type = INPUT_EVENT_KEYBOARD;
         ev.code = giga_key;
-        xQueueSend(input_event_queue, &ev, pdMS_TO_TICKS(10));
+        sent = xQueueSend(input_event_queue, &ev, ticks_to_wait);
     } else if (! (ev.type == INPUT_EVENT_LONG && ev.code == giga_buttons)) {
         ev.type = (giga_buttons != giga_key) ? INPUT_EVENT_GAMEPAD : INPUT_EVENT_LONG;
         ev.code = giga_buttons;
-        xQueueSend(input_event_queue, &ev, pdMS_TO_TICKS(10));
+        sent = xQueueSend(input_event_queue, &ev, ticks_to_wait);
     }
     xSemaphoreGive(input_event_mutex);
+    return (sent == pdTRUE) ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
 /* Post a loader frame for transmission to the Gigatron.
  * Caller retains ownership of mallocated pointer `frame`
  * until this function returns ESP_OK. */
-esp_err_t gigatron_post_frame(const uint8_t *frame, size_t length) {
+esp_err_t gigatron_post_frame(const uint8_t *frame, size_t length, TickType_t ticks_to_wait) {
     loader_event_t ev;
     if (!loader_frame_queue) {
         ESP_LOGE(TAG, "Loader frame queue not initialized");
@@ -207,9 +209,9 @@ esp_err_t gigatron_post_frame(const uint8_t *frame, size_t length) {
     }
     ev.frame = (uint8_t*)frame;
     ev.framelen = length;
-    if (xQueueSend(loader_frame_queue, &ev, pdMS_TO_TICKS(100)) != pdTRUE) {
+    if (xQueueSend(loader_frame_queue, &ev, ticks_to_wait) != pdTRUE) {
         ESP_LOGE(TAG, "Failed to enqueue loader frame (queue full or timeout)");
-        return ESP_ERR_NO_MEM;
+        return ESP_ERR_TIMEOUT;
     }
     return ESP_OK;
 }

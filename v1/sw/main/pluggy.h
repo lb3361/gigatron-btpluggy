@@ -8,16 +8,17 @@
 extern "C" {
 #endif
 
-/* Set callback for receiving bytes from Gigatron.
- * Callback is called with byte (0-255) or -1 if no valid pattern received
- * for more than 2 frames. RMT is initialized when a valid cb is provided.
+/* Initialize the Pluggy: mount the program stores and start the Gigatron
+ * receive task. The receive callback is internal to pluggy.c.
  * Returns:
  *   - ESP_OK on success
  *   - Error code on failure
  */
+esp_err_t pluggy_init(void);
 
-typedef void (*pluggy_rx_callback_t)(int byte);
-esp_err_t pluggy_init(pluggy_rx_callback_t cb);
+/* Handle a Ctrl+Fn chord pressed on the keyboard (fn = 1..12 for F1..F12).
+ * Called from the keyboard layer. Ctrl+F2 replays the recorded program. */
+void pluggy_handle_ctrl_fn(int fn);
 
 #ifdef __cplusplus
 }

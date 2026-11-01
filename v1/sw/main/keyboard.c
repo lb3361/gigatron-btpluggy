@@ -1,5 +1,6 @@
 #include "keyboard.h"
 #include "save.h"
+#include "pluggy.h"
 
 #include "esp_log.h"
 #include "esp_hid_common.h"
@@ -227,6 +228,8 @@ void process_giga_keys(keyboard_t *kb,
                 esp_intr_dump(stdout);
             }
 #endif
+            if (ctrl && !alt && ev->type == KB_KEY_DOWN)
+                pluggy_handle_ctrl_fn(ascii - 192);  // F1->1 ... F12->12
             ascii = -1;
         } else {
             // Caps lock 

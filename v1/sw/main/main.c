@@ -58,7 +58,7 @@ static void kb_event_handler(const kb_event_t *ev, void *user_data)
              ev->scancode, ev->modifiers, ev->giga_buttons, ev->giga_key, c);
     
     /* Post events into Gigatron interface */
-    gigatron_post_input(ev->giga_key, ev->giga_buttons);
+    gigatron_post_input(ev->giga_key, ev->giga_buttons, pdMS_TO_TICKS(10));
 }
 
 static void gp_event_handler(const gp_state_t *st, void *user_data)
@@ -71,14 +71,7 @@ static void gp_event_handler(const gp_state_t *st, void *user_data)
              st->raw_buttons, st->giga_buttons);
 
     /* Post gamepad event into Gigatron interface */
-    gigatron_post_input(0xFF, st->giga_buttons);
-}
-
-
-static void pluggy_rx_cb(int byte)
-{
-    ESP_LOGI(TAG, "RX callback received %d (%c)", byte,
-             (byte >= 32 && byte < 127) ? byte : '?');
+    gigatron_post_input(0xFF, st->giga_buttons, pdMS_TO_TICKS(10));
 }
 
 
@@ -207,7 +200,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Ready. Short press GPIO35 to pair (120s). Long press to clear bonds.");
 
     /* 11. Gigatron RX */
-    pluggy_init(pluggy_rx_cb);
+    pluggy_init();
 }
 
 /* Local Variables: */

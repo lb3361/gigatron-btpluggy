@@ -4,5 +4,9 @@ bootloader,       bootloader,      primary,  N/A,      N/A,
 partition_table,  partition_table, primary,  N/A,      N/A,
 nvs,              data,            nvs,      0x9000,   24K,
 phy_init,         data,            phy,      0xf000,   4K,
-factory,          app,             factory,  0x10000,  1984K,
-fat,              data,            fat,      0x200000, 6M,
+factory,          app,             factory,  0x10000,  3008K,
+# Read-write store for recorded BASIC programs (wear-levelling filesystem).
+storage,          data,            spiffs,   0x300000, 1M,
+# Read-only FAT image for loader programs, at the last 4MB of flash.
+# Flashed/read as a plain FAT image with esptool; mounted read-only (no wear levelling).
+fat,              data,            fat,      0x400000, 4M,
