@@ -17,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 
 
 #if NMI_IRQ_PSEUDOCODE
@@ -119,6 +120,7 @@ static TaskHandle_t s_gigatron_task_handle = NULL;
 /* Event injection queues */
 static QueueHandle_t input_event_queue = NULL;
 static QueueHandle_t loader_frame_queue = NULL;
+static SemaphoreHandle_t input_event_mutex = NULL;
 
 typedef enum {
     INPUT_EVENT_NONE = 0,
@@ -170,7 +172,9 @@ void gigatron_post_input(uint8_t giga_key, uint8_t giga_buttons) {
 
     if (! input_event_queue) {
         return;
-    } else if (giga_buttons == 0xff) {
+    }
+    xSemaphoreTake(input_event_mutex, portMAX_DELAY);
+    if (giga_buttons == 0xff) {
         if (ev.type == INPUT_EVENT_GAMEPAD) {
             ev.type = INPUT_EVENT_KEYBOARD;
             ev.code = 0xff;
@@ -185,6 +189,7 @@ void gigatron_post_input(uint8_t giga_key, uint8_t giga_buttons) {
         ev.code = giga_buttons;
         xQueueSend(input_event_queue, &ev, pdMS_TO_TICKS(10));
     }
+    xSemaphoreGive(input_event_mutex);
 }
 
 /* Post a loader frame for transmission to the Gigatron.
@@ -356,6 +361,14 @@ esp_err_t gigatron_init(void) {
         input_event_queue = xQueueCreate(GIGATRON_EVENTQUEUE_SIZE, sizeof(input_event_t));
         if (input_event_queue == NULL) {
             ESP_LOGE(TAG, "Failed to create event queue");
+            return ESP_FAIL;
+        }
+    }
+
+    if (input_event_mutex == NULL) {
+        input_event_mutex = xSemaphoreCreateMutex();
+        if (input_event_mutex == NULL) {
+            ESP_LOGE(TAG, "Failed to create event mutex");
             return ESP_FAIL;
         }
     }
