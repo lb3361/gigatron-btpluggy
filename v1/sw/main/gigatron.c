@@ -168,8 +168,8 @@ esp_err_t gigatron_post_input(uint8_t byte, uint8_t duration,
     ev.frame = (framelen) ? frame : NULL;
     ev.framelen = (frame) ? abs(framelen) : 0;
     ev.framechk = 0;
-    if (framelen == -66)
-        ev.framechk = 65;
+    if (framelen < 0)
+        ev.framechk = ev.framelen - 1;
     if (xQueueSend(input_event_queue, &ev, ticks_to_wait) != pdTRUE)
         return ESP_ERR_TIMEOUT;
     return ESP_OK;

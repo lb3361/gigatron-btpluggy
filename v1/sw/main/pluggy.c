@@ -1,7 +1,10 @@
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <inttypes.h>
+#include <dirent.h>
 
 #include "gigatron.h"
 #include "pluggy.h"
@@ -37,11 +40,11 @@ static const char *TAG = "PLUGGY";
 #define PLUGGY_RX_TIMEOUT_FRAMES     30   /* timeout to close a save */
 
 /* Mount points and partition labels for the two program stores. */
-#define PLUGGY_BASIC_PATH     "/basic"     /* RW SPIFFS: recorded BASIC programs */
+#define PLUGGY_SAVED_PATH     "/saved"     /* RW SPIFFS: recorded BASIC programs */
+#define PLUGGY_SAVED_FILE     "/saved/saved.txt"
 #define PLUGGY_PROGRAMS_PATH  "/programs"  /* RO FAT: programs for the loader */
 #define PLUGGY_SPIFFS_LABEL   "storage"
 #define PLUGGY_FAT_LABEL      "fat"
-#define PLUGGY_SAVED_FILE     PLUGGY_BASIC_PATH "/saved.txt"
 
 /* A received stream whose first byte is in the control range is a
  * pluggy-reloaded command; anything else is a program to record. Bytes
@@ -109,7 +112,7 @@ void gigatron_rx_task(void *arg) {
         rmt_symbol_word_t s0 = rx_symbols[0];
         rmt_symbol_word_t s1 = rx_symbols[1];
         if (rx_num_symbols == 2 &&
-            s0.duration0 + s0.duration1 + s1.duration0 < 80 &&
+            s0.duration0 + s0.duration1 + s1.duration0 < 80 && s0.duration1 > 15 &&
             s0.level0 == 0 && s0.level1 == 1 && s1.level0 == 0 )
             {
                 rx_byte = (rx_byte >> 1) | ((s1.duration0 > s0.duration0) ? 0x80 : 0);
@@ -128,8 +131,8 @@ void gigatron_rx_task(void *arg) {
 
 /* ── program stores (mount) ──────────────────────────────────────── */
 
-/* Mount the read-write SPIFFS (recorded BASIC programs) and the read-only
- * FAT (loader programs). The FAT is skipped silently when unformatted. */
+/* Mount the read-write SPIFFS and the read-only FAT (loader programs).
+   The FAT is skipped silently when unformatted. */
 static void mount_program_stores(void)
 {
     static bool mounted = false;
@@ -138,7 +141,7 @@ static void mount_program_stores(void)
     mounted = true;
 
     esp_vfs_spiffs_conf_t spiffs_conf = {
-        .base_path = PLUGGY_BASIC_PATH,
+        .base_path = PLUGGY_SAVED_PATH,
         .partition_label = PLUGGY_SPIFFS_LABEL,
         .max_files = 4,
         .format_if_mount_failed = true,
@@ -147,7 +150,7 @@ static void mount_program_stores(void)
     if (err != ESP_OK)
         ESP_LOGW(TAG, "SPIFFS mount failed: %s", esp_err_to_name(err));
     else
-        ESP_LOGI(TAG, "SPIFFS mounted at %s", PLUGGY_BASIC_PATH);
+        ESP_LOGI(TAG, "SPIFFS mounted at %s", PLUGGY_SAVED_PATH);
 
     esp_vfs_fat_mount_config_t fat_conf = {
         .format_if_mount_failed = false,
@@ -190,9 +193,7 @@ static void pluggy_rx_cb(int byte)
         rx_cmd_len = 0;
         return;
     }
-
     uint8_t b = (uint8_t)byte;
-
     switch (rx_state) {
     case RX_IDLE:                             /* first byte decides the mode */
         if (b <= PLUGGY_CMD_MAX) {
@@ -228,20 +229,136 @@ static void pluggy_rx_cb(int byte)
     }
 }
 
-/* ── replaying a recorded program as keyboard input ──────────────── */
+/* ── gt1 loader protocol ─────────────────────────────────────────── */
 
-static volatile bool s_replaying = false;
+/* One loader packet per video frame:
+ *   [0]='L' [1]=len [2]=addrL [3]=addrH [4..63]=payload [64]=checksum
+ * The checksum is computed with a zero initial value over the 'L' byte
+ * (contributing 'L'<<6, i.e. its two low bits duplicated into the high
+ * bits of the length byte), the length byte, the two address bytes and
+ * all 60 payload bytes including padding.  gigatron.c patches the byte
+ * to account for the running checksum of preceding continued frames. */
 
-static void pluggy_replay_task(void *arg)
+static bool has_gt1_extension(const char *fname)
 {
-    const char *fname = (const char*)arg;
+    size_t n = strlen(fname);
+    return n > 4 && strcasecmp(fname + n - 4, ".gt1") == 0;
+}
+
+static char *make_absolute_fname(const char *fname)
+{
+    if (fname[0] == '/')
+        return strdup(fname);
+    char *copy = malloc(strlen(PLUGGY_PROGRAMS_PATH) + strlen(fname) + 2);
+    if (! copy)
+        return NULL;
+    strcpy(copy, PLUGGY_PROGRAMS_PATH);
+    strcat(copy, "/");
+    strcat(copy, fname);
+    return copy;
+}
+
+#define LOADER_PAYLOAD   60
+#define LOADER_FRAMELEN  65
+
+static esp_err_t gt1_post_packet(uint8_t addrl, uint8_t addrh,
+                                 const uint8_t *data, int len)
+{
+    esp_err_t err;
+    uint8_t *frame = malloc(LOADER_FRAMELEN);
+    if (!frame)
+        return ESP_ERR_NO_MEM;
+    memset(frame, 0, LOADER_FRAMELEN);
+    frame[0] = 'L';
+    frame[1] = (uint8_t)(len + (frame[0] << 6));
+    frame[2] = addrl;
+    frame[3] = addrh;
+    memcpy(frame + 4, data, len);
+    int sum = 0;
+    for (int i = 0; i < LOADER_FRAMELEN - 1; i++)
+        sum += frame[i];
+    frame[LOADER_FRAMELEN - 1] = (uint8_t)-sum;
+    err = gigatron_post_input(0xff, 0, frame, -LOADER_FRAMELEN, portMAX_DELAY);
+    if (err != ESP_OK)
+        free(frame);
+    return err;
+}
+
+static esp_err_t gt1_post_segment(uint8_t addrl, uint8_t addrh,
+                                 const uint8_t *data, int seglen)
+{
+    esp_err_t err;
+    if (addrl + seglen > 0x100)
+        return ESP_FAIL;
+    while (seglen > 0) {
+        int len = (seglen > LOADER_PAYLOAD) ? LOADER_PAYLOAD : seglen;
+        err = gt1_post_packet(addrl, addrh, data, len);
+        if (err != ESP_OK)
+            return err;
+        seglen -= len;
+        addrl += len;
+        data  += len;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t gt1_post_file(const char *fname)
+{
+    esp_err_t err;
+    uint8_t addrh, addrl;
+    int seglen;
+    uint8_t data[256];
+    FILE *f = fopen(fname, "rb");
+    if (! f) {
+        ESP_LOGE(TAG, "Gt1 file %s not found", fname);
+        return ESP_ERR_NOT_FOUND;
+    }
+    /* post dummy frame to resynchronize checksums */
+    gigatron_post_input(0xff, 2, 0, 0, pdMS_TO_TICKS(10));
+    /* segments */
+    err = ESP_FAIL;
+    addrh = fgetc(f);
+    do {
+        addrl = fgetc(f);
+        seglen = fgetc(f);
+        if (seglen == 0)
+            seglen = 256;
+        if (feof(f) || ferror(f) ||
+            fread(data, 1, seglen, f) != seglen )
+            goto end;
+        err = gt1_post_segment(addrl, addrh, data, seglen);
+        if (err != ESP_OK)
+            goto end;
+        err = ESP_FAIL;
+        addrh = fgetc(f);
+    } while (addrh);
+    /* execution address */
+    addrh = fgetc(f);
+    addrl = fgetc(f);
+    if (feof(f) || ferror(f))
+        goto end;
+    if (fgetc(f) != EOF)
+        ESP_LOGW(TAG, "Garbage after the end of gt1 file %s", fname);
+    ESP_LOGI(TAG, "Execution addres for gt1 file %s is 0x%02x%02x",
+             fname, addrh, addrl);
+    err = gt1_post_packet(addrl, addrh, data, 0);
+ end:
+    if (err == ESP_FAIL)
+        ESP_LOGE(TAG, "Corrupted gt1 file %s", fname);
+    else if (err == ESP_ERR_NO_MEM)
+        ESP_LOGE(TAG, "Out of memory while transfering %s", fname);
+    fclose(f);
+    return err;
+}
+
+static esp_err_t pluggy_copy_text(const char *fname)
+{
     FILE *f = fopen(fname, "rb");
     if (!f) {
-        ESP_LOGW(TAG, "No recorded program at %s", PLUGGY_SAVED_FILE);
-        s_replaying = false;
-        vTaskDelete(NULL);
-        return;
+        ESP_LOGE(TAG, "File %s not found", fname);
+        return ESP_ERR_NOT_FOUND;
     }
+    /* send text with simulated keypresses */
     /* replicate babelfish delays, but counted in frames */
     int c, j = 0, n = 0;
     int lineDelay = 3;
@@ -254,40 +371,103 @@ static void pluggy_replay_task(void *arg)
             gigatron_post_input(0xff, lineDelay, 0, 0, portMAX_DELAY);
             lineDelay = 3;
             j = 0;
-        } else {
+        } else
             gigatron_post_input(0xff, 0, 0, 0, portMAX_DELAY);
-        }
     }
-    fclose(f);
     ESP_LOGI(TAG, "Replayed %d bytes from %s", n, fname);
-    s_replaying = false;
+    return ESP_OK;
+}
+
+static volatile bool s_transfering = false;
+
+static void pluggy_transfer_task(void *arg)
+{
+    char *fname = (char*)arg;
+    if (has_gt1_extension(fname)) {
+        gt1_post_file(fname);
+    } else {
+        pluggy_copy_text(fname);
+    }
+    free(fname);
+    s_transfering = false;
     vTaskDelete(NULL);
 }
 
-static void pluggy_start_replay(const char *fname)
+static void pluggy_transfer(const char *fname)
 {
-    if (s_replaying) {
-        ESP_LOGI(TAG, "Replay already running");
+    if (s_transfering) {
+        ESP_LOGI(TAG, "Transfer already running");
         return;
     }
-    s_replaying = true;
-    if (xTaskCreatePinnedToCore(pluggy_replay_task, "pluggy_replay",
-                                PLUGGY_REPLAY_TASK_STACK, (void*)fname,
+    /* compute filename */
+    char *copy = make_absolute_fname(fname);
+    if (!copy) {
+        ESP_LOGE(TAG, "Out of memory starting transfer of %s", fname);
+        return;
+    }
+    /* start transfer task */
+    s_transfering = true;
+    if (xTaskCreatePinnedToCore(pluggy_transfer_task, "pluggy_replay",
+                                PLUGGY_REPLAY_TASK_STACK, copy,
                                 PLUGGY_REPLAY_TASK_PRIORITY, NULL,
                                 PLUGGY_REPLAY_TASK_CORE) != pdPASS) {
-        s_replaying = false;
+        free(copy);
+        s_transfering = false;
         ESP_LOGE(TAG, "Failed to start replay task");
     }
 }
 
+/* ── ctrl+fn bindings ────────────────────────────────────────────── */
+
+#define PLUGGY_GT1_MAX_FILES 10   /* slots on Ctrl+F3..Ctrl+F12 */
+
+/* Returns the name of the n-th (1-based) gt1 file in the FAT store,
+ * in directory order, or NULL when there is no such file.
+ * The filename is held in a static buffer (save before using). */
+static char *pluggy_nth_gt1(int n)
+{
+    DIR *dir = opendir(PLUGGY_PROGRAMS_PATH);
+    if (!dir) {
+        ESP_LOGW(TAG, "Cannot open %s", PLUGGY_PROGRAMS_PATH);
+        return NULL;
+    }
+    int count = 0;
+    static struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        size_t len = strlen(de->d_name);
+        if (len > 4 && strcasecmp(de->d_name + len - 4, ".gt1") == 0)
+            if (++ count == n) {
+                closedir(dir);
+                return de->d_name;
+            }
+    }
+    closedir(dir);
+    return NULL;
+}
+
 void pluggy_handle_ctrl_fn(int fn)
 {
-    switch (fn) {
-    case 2:  /* Ctrl+F2: replay the recorded program */
-        pluggy_start_replay(PLUGGY_SAVED_FILE);
-        break;
-    default:
-        break;
+    if (fn == 1) {
+        /* Ctrl+F1: list the available programs (help screen TBD) */
+        for (int i = 1; i <= PLUGGY_GT1_MAX_FILES; i++) {
+            char *p = pluggy_nth_gt1(i);
+            if (!p) break;
+            ESP_LOGI(TAG, "Ctrl+F%-2d  %s", i + 2, p);
+        }
+        if (FILE *f = fopen(PLUGGY_SAVED_FILE, "rb")) {
+            fclose(f);
+            ESP_LOGI(TAG, "Ctrl+F12  -SAVED-");
+        }
+    } else if (fn >= 2 && fn <= 11) {
+        /* Ctrl+F2..F11: load the n-th gt1 file from the FAT partition */
+        char *path = pluggy_nth_gt1(fn - 1);
+        if (path)
+            pluggy_transfer(path);
+        else
+            ESP_LOGW(TAG, "No gt1 file #%d in %s", fn - 1, PLUGGY_PROGRAMS_PATH);
+    } else if (fn == 12) {
+        /* Ctrl+F12: replay the recorded program */
+        pluggy_transfer(PLUGGY_SAVED_FILE);
     }
 }
 

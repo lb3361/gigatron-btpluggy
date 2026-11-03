@@ -100,12 +100,12 @@ extern QueueHandle_t input_event_queue;
  * - byte: which value for serialRaw
  * - duration: for how many extra frames
  * - frame: additional data for a loader frame, or null
- * - framelen: length of the additional data.
+ * - abs(framelen): length of the additional data.
  * - ticks: how long to wait for the queue.
  * Returns ESP_OK on success or ESP_ERR_TIMEMOUT.
  * Caller retains ownership of mallocated pointer `frame`
  * until this function returns ESP_OK.
- * Setting framelen to -66 means 66 with a checksum at location 65.
+ * Negaive framelen indicate that the last frame byte is a checksum.
  * The checksum must be computed with a zero initial value
  * and the queuing code will fix it depending on the presence
  * continued frames.
