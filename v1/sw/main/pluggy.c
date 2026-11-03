@@ -242,20 +242,20 @@ static void pluggy_replay_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
-    /* replicate babelfish delays */
+    /* replicate babelfish delays, but counted in frames */
     int c, j = 0, n = 0;
-    int lineDelay = 50;
+    int lineDelay = 3;
     while ((c = fgetc(f)) != EOF) {
         j += 1; n += 1;
-        gigatron_post_input((uint8_t)c, 0xff, pdMS_TO_TICKS(100));
+        gigatron_post_input((uint8_t)c, 1, 0, 0, portMAX_DELAY);
         if (c == '\r')
-            lineDelay = 300 + j * 50;
+            lineDelay = 18 + j * 3;
         if (j >= 26 || c == '\n') {
-            while (uxQueueMessagesWaiting(input_event_queue))
-                vTaskDelay(pdMS_TO_TICKS(20));
-            vTaskDelay(pdMS_TO_TICKS(lineDelay));
-            lineDelay = 50;
+            gigatron_post_input(0xff, lineDelay, 0, 0, portMAX_DELAY);
+            lineDelay = 3;
             j = 0;
+        } else {
+            gigatron_post_input(0xff, 0, 0, 0, portMAX_DELAY);
         }
     }
     fclose(f);

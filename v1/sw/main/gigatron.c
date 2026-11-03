@@ -119,25 +119,16 @@ static TaskHandle_t s_gigatron_task_handle = NULL;
 
 /* Event injection queues */
 QueueHandle_t input_event_queue = NULL;
-QueueHandle_t loader_frame_queue = NULL;
-static SemaphoreHandle_t input_event_mutex = NULL;
-
-typedef enum {
-    INPUT_EVENT_NONE = 0,
-    INPUT_EVENT_KEYBOARD,
-    INPUT_EVENT_GAMEPAD,
-    INPUT_EVENT_LONG,
-} input_event_type_t;
 
 typedef struct {
-    input_event_type_t type;
-    uint8_t code;
+    uint8_t byte;
+    uint8_t duration;
+    uint8_t *frame;
+    int framelen;
+    int framechk;
 } input_event_t;
 
-typedef struct {
-    uint8_t *frame;
-    size_t framelen;
-} loader_event_t;
+static uint8_t checksum = 'g';
 
 
 /* This ISR captures processes the /IE pulse and the PSEUDO_VBL pulses
@@ -166,53 +157,21 @@ static void gigatron_isr(void *arg)
     }
 }
 
-/* Post keyboard and gamepad events into the Gigatron interface. */
-esp_err_t gigatron_post_input(uint8_t giga_key, uint8_t giga_buttons, TickType_t ticks_to_wait) {
-    static input_event_t ev = { .type = INPUT_EVENT_NONE };
-    BaseType_t sent = pdTRUE;
 
-    if (! input_event_queue) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    xSemaphoreTake(input_event_mutex, portMAX_DELAY);
-    if (giga_buttons == 0xff) {
-        if (ev.type == INPUT_EVENT_GAMEPAD) {
-            ev.type = INPUT_EVENT_KEYBOARD;
-            ev.code = 0xff;
-            xQueueSend(input_event_queue, &ev, ticks_to_wait);
-            ev.type = INPUT_EVENT_NONE;
-        }
-        ev.type = INPUT_EVENT_KEYBOARD;
-        ev.code = giga_key;
-        sent = xQueueSend(input_event_queue, &ev, ticks_to_wait);
-    } else if (! (ev.type == INPUT_EVENT_LONG && ev.code == giga_buttons)) {
-        ev.type = (giga_buttons != giga_key) ? INPUT_EVENT_GAMEPAD : INPUT_EVENT_LONG;
-        ev.code = giga_buttons;
-        sent = xQueueSend(input_event_queue, &ev, ticks_to_wait);
-    }
-    xSemaphoreGive(input_event_mutex);
-    return (sent == pdTRUE) ? ESP_OK : ESP_ERR_TIMEOUT;
-}
-
-/* Post a loader frame for transmission to the Gigatron.
- * Caller retains ownership of mallocated pointer `frame`
- * until this function returns ESP_OK. */
-esp_err_t gigatron_post_frame(const uint8_t *frame, size_t length, TickType_t ticks_to_wait) {
-    loader_event_t ev;
-    if (!loader_frame_queue) {
-        ESP_LOGE(TAG, "Loader frame queue not initialized");
-        return ESP_FAIL;
-    }
-    if (!frame || (length != 64 && length != 65)) {
-        ESP_LOGE(TAG, "Invalid frame or length (must be 64 or 65): %p, %zu", frame, length);
-        return ESP_ERR_INVALID_ARG;
-    }
-    ev.frame = (uint8_t*)frame;
-    ev.framelen = length;
-    if (xQueueSend(loader_frame_queue, &ev, ticks_to_wait) != pdTRUE) {
-        ESP_LOGE(TAG, "Failed to enqueue loader frame (queue full or timeout)");
+esp_err_t gigatron_post_input(uint8_t byte, uint8_t duration,
+                              uint8_t *frame, int framelen,
+                              TickType_t ticks_to_wait)
+{
+    input_event_t ev;
+    ev.byte = byte;
+    ev.duration = duration;
+    ev.frame = (framelen) ? frame : NULL;
+    ev.framelen = (frame) ? abs(framelen) : 0;
+    ev.framechk = 0;
+    if (framelen == -66)
+        ev.framechk = 65;
+    if (xQueueSend(input_event_queue, &ev, ticks_to_wait) != pdTRUE)
         return ESP_ERR_TIMEOUT;
-    }
     return ESP_OK;
 }
 
@@ -242,30 +201,26 @@ void gigatron_task(void *arg) {
         /* Released on VBL */
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         /* Process event injection state machine */
-        input_event_t iev;
-        loader_event_t fev;
-        static uint8_t *delayedfree[2];
+        input_event_t ev;
+        static uint8_t *delayedfree[3];
         static int delay = 0;
         if (delay > 0)
             {
                 delay--;
+                checksum = 'g';
             }
-        else if (loader_frame_queue && uxQueueMessagesWaiting(loader_frame_queue)
-                 && xQueueReceive(loader_frame_queue, &fev, 0) == pdTRUE)
+        else if (input_event_queue
+                 && xQueueReceive(input_event_queue, &ev, 0) == pdTRUE)
             {
-                irq.loaderframelen = fev.framelen;
-                delayedfree[1] = irq.loaderframe = fev.frame;
-            }
-        else if (input_event_queue && uxQueueMessagesWaiting(input_event_queue)
-                 && xQueueReceive(input_event_queue, &iev, 0) == pdTRUE)
-            {
-                if (iev.type == INPUT_EVENT_KEYBOARD) {
-                    irq.inject = iev.code;
-                    delay = 2;
+                irq.inject = ev.byte;
+                irq.loaderframelen = ev.framelen;
+                delayedfree[2] = irq.loaderframe = ev.frame;
+                delay = ev.duration;
+                if (ev.framechk) {
+                    ev.frame[ev.framechk] -= checksum;
+                    checksum = ev.frame[ev.framechk];
                 } else {
-                    irq.inject = iev.code;
-                    if (iev.type == INPUT_EVENT_LONG)
-                        delay = 150;
+                    checksum = 'g';
                 }
             }
 #if DEBUG
@@ -280,7 +235,8 @@ void gigatron_task(void *arg) {
         if (delayedfree[0])
             free(delayedfree[0]);
         delayedfree[0] = delayedfree[1];
-        delayedfree[1] = 0;
+        delayedfree[1] = delayedfree[2];
+        delayedfree[2] = 0;
     }
 }
 
@@ -363,23 +319,6 @@ esp_err_t gigatron_init(void) {
         input_event_queue = xQueueCreate(GIGATRON_EVENTQUEUE_SIZE, sizeof(input_event_t));
         if (input_event_queue == NULL) {
             ESP_LOGE(TAG, "Failed to create event queue");
-            return ESP_FAIL;
-        }
-    }
-
-    if (input_event_mutex == NULL) {
-        input_event_mutex = xSemaphoreCreateMutex();
-        if (input_event_mutex == NULL) {
-            ESP_LOGE(TAG, "Failed to create event mutex");
-            return ESP_FAIL;
-        }
-    }
-
-    /* Create loader frame queue */
-    if (loader_frame_queue == NULL) {
-        loader_frame_queue = xQueueCreate(GIGATRON_FRAMEQUEUE_SIZE, sizeof(loader_event_t));
-        if (loader_frame_queue == NULL) {
-            ESP_LOGE(TAG, "Failed to create loader frame queue");
             return ESP_FAIL;
         }
     }

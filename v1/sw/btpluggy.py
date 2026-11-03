@@ -116,6 +116,7 @@ def load_partitions_from_device(port, chip, ptab_offset=PTAB_OFFSET_DEFAULT):
     os.close(fd)
     try:
         rc = _run_esptool(_global_args(port, chip)
+                          + ["--silent"]
                           + ["read-flash", hex(ptab_offset), hex(PTAB_READ_SIZE), tmp],
                           quiet=True)
         if rc != 0:

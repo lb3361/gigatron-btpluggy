@@ -48,17 +48,38 @@ static void hid_report_cb(const hid_report_t *report)
     (void)report;
 }
 
+static void post_input(uint8_t giga_key, uint8_t giga_buttons)
+{
+    static enum { EV_NONE, EV_KEY, EV_BUTTONS, EV_RESET } last = EV_NONE;
+    /* serialize key and button events with ff separators when needed */
+    if (giga_buttons == 0xff && giga_key == 0xff) {
+        gigatron_post_input(0xff, 0, 0, 0, pdMS_TO_TICKS(10));
+        last = EV_NONE;
+    } else if (last == EV_RESET) {
+        /* pass */
+    } else if (giga_buttons == 0xff) {
+        if (last == EV_BUTTONS)
+            gigatron_post_input(0xff, 2, 0, 0, pdMS_TO_TICKS(10));
+        gigatron_post_input(giga_key, 2, 0, 0, pdMS_TO_TICKS(10));
+        last = EV_KEY;
+    } else if (giga_buttons == giga_key
+               && !uxQueueMessagesWaiting(input_event_queue)) {
+        gigatron_post_input(giga_buttons, 150, 0, 0, pdMS_TO_TICKS(10));
+        last = EV_RESET;
+    } else {
+        gigatron_post_input(giga_buttons, 0, 0, 0, pdMS_TO_TICKS(10));
+        last = EV_BUTTONS;
+    }
+}
+
 static void kb_event_handler(const kb_event_t *ev, void *user_data)
 {
     int c = ev->giga_key;
     if (c < ' ' || c >= 0x7f) { c = ' '; }
-    
     ESP_LOGI(TAG, "KB: %s scancode=0x%02x mod=0x%02x g-btn=0x%02x g-key=0x%02x (%c)",
              ev->type == KB_KEY_DOWN ? "DOWN" : "UP",
              ev->scancode, ev->modifiers, ev->giga_buttons, ev->giga_key, c);
-    
-    /* Post events into Gigatron interface */
-    gigatron_post_input(ev->giga_key, ev->giga_buttons, pdMS_TO_TICKS(10));
+    post_input(ev->giga_key, ev->giga_buttons);
 }
 
 static void gp_event_handler(const gp_state_t *st, void *user_data)
@@ -69,9 +90,7 @@ static void gp_event_handler(const gp_state_t *st, void *user_data)
              st->buttons[GP_BTN_START], st->buttons[GP_BTN_SELECT],
              st->dpad_up, st->dpad_down, st->dpad_left, st->dpad_right,
              st->raw_buttons, st->giga_buttons);
-
-    /* Post gamepad event into Gigatron interface */
-    gigatron_post_input(0xFF, st->giga_buttons, pdMS_TO_TICKS(10));
+    post_input(0xFF, st->giga_buttons);
 }
 
 

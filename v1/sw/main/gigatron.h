@@ -89,31 +89,31 @@ extern gigatron_irq_data_t irq;
  */
 esp_err_t gigatron_init(void);
 
-/* Post keyboard and gamepad events into the Gigatron interface
- *  - when giga_buttons != 0xff, it represents a button combination.
- *  - when giga_buttons == 0xff, then giga_key represents a key press.
- * Up to GIGATRON_EVENTQUEUE_SIZE events are queued.
- * Key press are maintained on the input port for 3 frames.
- * Button combination are maintained until all buttons are released.
- * When giga_buttons == giga_key != 0xff, the code is maintained for 150 frames.
- * This is useful to implement ctrl+alt+del for a reset.
- * Blocks up to ticks_to_wait for room in the event queue.
- * Returns ESP_OK, or ESP_ERR_TIMEOUT if the queue stayed full.
- */
-esp_err_t gigatron_post_input(uint8_t giga_key, uint8_t giga_buttons,
-                              TickType_t ticks_to_wait);
 
-/* Post a loader frame for transmission to the Gigatron.
+/* The input event queue,
+ * potentially useful to time inout delivery.
+ */
+extern QueueHandle_t input_event_queue;
+
+
+/* Post input byte into the Gigatron interface.
+ * - byte: which value for serialRaw
+ * - duration: for how many extra frames
+ * - frame: additional data for a loader frame, or null
+ * - framelen: length of the additional data.
+ * - ticks: how long to wait for the queue.
+ * Returns ESP_OK on success or ESP_ERR_TIMEMOUT.
  * Caller retains ownership of mallocated pointer `frame`
  * until this function returns ESP_OK.
- * Blocks up to ticks_to_wait for room in the frame queue.
- * Returns ESP_OK, or an error code on invalid input or timeout. */
-esp_err_t gigatron_post_frame(const uint8_t *frame, size_t length,
+ * Setting framelen to -66 means 66 with a checksum at location 65.
+ * The checksum must be computed with a zero initial value
+ * and the queuing code will fix it depending on the presence
+ * continued frames.
+ */
+esp_err_t gigatron_post_input(uint8_t byte, uint8_t duration,
+                              uint8_t *frame, int framelen,
                               TickType_t ticks_to_wait);
 
-/* Handles of the input and frame queues */
-  extern QueueHandle_t input_event_queue;
-  extern QueueHandle_t loader_frame_queue;
   
 #ifdef __cplusplus
 }
