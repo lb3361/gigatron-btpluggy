@@ -445,18 +445,130 @@ static char *pluggy_nth_gt1(int n)
     return NULL;
 }
 
+/* ── help screen (Ctrl+F1) ───────────────────────────────────────── */
+
+/* Code adapted from marcelk's Babelfish.ino */
+
+/* Render text into the Loader screen's frame buffer using loader frames.
+ * The screen is 120 rows of 160 pixels; row i lives at 0x800+i*256, so
+ * the rows are not contiguous.  A text line is 6 pixel rows tall.  For
+ * compatibility with earlier versions of the loader we never write into
+ * pages 0x59 and 0x5a, which limits us to rows 0..78, i.e. 13 text
+ * lines.  The Loader must be running for these frames to be accepted. */
+
+#define HELP_FG        63   /* white */
+#define HELP_BG        32   /* blue  */
+#define HELP_LINES     13   /* rows 0..78 divided by 6 rows per line */
+#define HELP_MAX_CHARS 40   /* 160 pixels / 4 pixels per character */
+
+static const int tinyfont[96] = {
+#include "tinyfont.h"
+};
+
+/* Render one text line at frame-buffer address pos, which must be the
+ * start of a pixel row.  Each of the 5 bit planes of the glyphs is
+ * rendered and converted to pixel colors in turn, then posted as one
+ * segment.  The ATtiny85 couldn't hold both arrays, so BabelFish
+ * re-rendered the bitmap per plane; here we can afford the row buffer. */
+static esp_err_t help_render_string(uint16_t pos, const char *text)
+{
+    uint8_t row[4 * HELP_MAX_CHARS];
+    int n = 0;
+    while (text[n] && n < HELP_MAX_CHARS)
+        n++;
+    for (int b = 32; b; b >>= 1) {
+        int x = 0;
+        for (int i = 0; i < n; i++) {
+            int c = (uint8_t)text[i] - 32;
+            if (c < 0 || c >= 96)
+                c = 0;                       /* unmapped: render as space */
+            int pixels = tinyfont[c];
+            if (pixels >= 0) {
+                row[x++] = 0;                /* regular position */
+                row[x++] = (pixels >> 9)  & 62;
+                row[x++] = (pixels >> 4)  & 62;
+                row[x++] = (pixels << 1)  & 62;
+            } else {
+                row[x++] = 0;                /* shifted down for g j p q y */
+                row[x++] = (pixels >> 10) & 31;
+                row[x++] = (pixels >> 5)  & 31;
+                row[x++] =  pixels         & 31;
+                if (text[i] == 'j')          /* special case to dot the j */
+                    row[x-1] = '.';
+            }
+        }
+        for (int i = 0; i < x; i++)          /* bitmap -> pixel colors */
+            row[i] = (row[i] & b) ? HELP_FG : HELP_BG;
+        esp_err_t err = gt1_post_segment(pos & 0xff, pos >> 8, row, x);
+        if (err != ESP_OK)
+            return err;
+        pos += 256;                          /* next scanline */
+    }
+    return ESP_OK;
+}
+
+/* Render a text line and advance pos to the start of the next one. */
+static esp_err_t help_render_line(uint16_t *pos, const char *text)
+{
+    esp_err_t err = help_render_string(*pos, text);
+    if (err != ESP_OK)
+        return err;
+    *pos = (*pos & 0xff00) + 0x600;          /* 6 rows down, same page */
+    return ESP_OK;
+}
+
+static void pluggy_help_task(void *arg)
+{
+    uint16_t pos = 0x800;
+    int line = 0;
+    char text[HELP_MAX_CHARS + 1];
+
+    /* post dummy frame to resynchronize checksums */
+    gigatron_post_input(0xff, 2, 0, 0, pdMS_TO_TICKS(10));
+
+    if (line < HELP_LINES) {
+        help_render_line(&pos, "Ctrl-F1  This help");
+        line++;
+    }
+    for (int i = 1; i <= PLUGGY_GT1_MAX_FILES; i++) {
+        char *name = pluggy_nth_gt1(i);
+        if (! name)
+            break;
+        ESP_LOGI(TAG, "Ctrl+F%-2d  %s", i + 1, name);
+        if (line >= HELP_LINES)
+            continue;
+        /* snprintf copies the name: it lives in readdir's static dirent */
+        snprintf(text, sizeof text, "Ctrl-F%-2d %s", i + 1, name);
+        help_render_line(&pos, text);
+        line++;
+    }
+    if (FILE *f = fopen(PLUGGY_SAVED_FILE, "rb")) {
+        fclose(f);
+        ESP_LOGI(TAG, "Ctrl+F12  -SAVED-");
+        if (line < HELP_LINES) {
+            help_render_line(&pos, "Ctrl-F12 -SAVED-");
+            line++;
+        }
+    }
+    s_transfering = false;
+    vTaskDelete(NULL);
+}
+
 void pluggy_handle_ctrl_fn(int fn)
 {
     if (fn == 1) {
-        /* Ctrl+F1: list the available programs (help screen TBD) */
-        for (int i = 1; i <= PLUGGY_GT1_MAX_FILES; i++) {
-            char *p = pluggy_nth_gt1(i);
-            if (!p) break;
-            ESP_LOGI(TAG, "Ctrl+F%-2d  %s", i + 2, p);
+        /* Ctrl+F1: list the available programs on the Loader screen */
+        if (s_transfering) {
+            ESP_LOGI(TAG, "Transfer already running");
+            return;
         }
-        if (FILE *f = fopen(PLUGGY_SAVED_FILE, "rb")) {
-            fclose(f);
-            ESP_LOGI(TAG, "Ctrl+F12  -SAVED-");
+        s_transfering = true;
+        if (xTaskCreatePinnedToCore(pluggy_help_task, "pluggy_help",
+                                    PLUGGY_REPLAY_TASK_STACK, NULL,
+                                    PLUGGY_REPLAY_TASK_PRIORITY, NULL,
+                                    PLUGGY_REPLAY_TASK_CORE) != pdPASS) {
+            s_transfering = false;
+            ESP_LOGE(TAG, "Failed to start help task");
         }
     } else if (fn >= 2 && fn <= 11) {
         /* Ctrl+F2..F11: load the n-th gt1 file from the FAT partition */
