@@ -40,7 +40,7 @@ except Exception:                       # pragma: no cover - defensive
     FatalError = RuntimeError
 
 DEFAULT_CHIP = "esp32"
-DEFAULT_BAUD = 230400
+DEFAULT_BAUD = 115200
 
 # On-flash partition table (see ESP-IDF gen_esp32part.py):
 #   32-byte entries, little-endian: magic(2) type(1) subtype(1) offset(4)
@@ -116,7 +116,6 @@ def load_partitions_from_device(port, chip, ptab_offset=PTAB_OFFSET_DEFAULT):
     os.close(fd)
     try:
         rc = _run_esptool(_global_args(port, chip)
-                          + ["--silent"]
                           + ["read-flash", hex(ptab_offset), hex(PTAB_READ_SIZE), tmp],
                           quiet=True)
         if rc != 0:
