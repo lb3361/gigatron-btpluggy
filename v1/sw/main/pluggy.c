@@ -445,10 +445,16 @@ static esp_err_t pluggy_copy_text(const char *fname)
 #define ENTRY_DIR      2
 #define ENTRY_ERROR    3
 
-static DIR  *s_dir = NULL;
-static struct dirent *s_dirent;
-static bool s_backdir = false;
-static char s_path[PLUGGY_PATH_MAX];   /* current dir */
+/* The browser listing uses the raw FatFs API (not POSIX readdir) so it can
+ * read FILINFO.altname, the 8.3 short name.  Old browsers only understand
+ * short names, and the name shown must be the one that round-trips back
+ * through OPEN/EXEC.  s_path stays a VFS path for gt1_post_file()/fopen(). */
+static FF_DIR  s_dir;
+static bool    s_dir_open = false;
+static FILINFO s_fno;          /* pending entry, like the old s_dirent */
+static bool    s_have_fno = false;
+static bool    s_backdir = false;
+static char    s_path[PLUGGY_PATH_MAX];   /* current dir (VFS path) */
 
 static void wake_browser(void)
 {
@@ -469,10 +475,31 @@ static void wake_browser(void)
 
 static void dir_close(void)
 {
-    if (s_dir)
-        closedir(s_dir);
-    s_dir = NULL;
-    s_dirent = NULL;
+    if (s_dir_open)
+        f_closedir(&s_dir);
+    s_dir_open = false;
+    s_have_fno = false;
+}
+
+/* The name to show the browser: the 8.3 short name when one exists, else
+ * the (already short) primary name.  This is the name that round-trips
+ * back through OPEN/EXEC and fopen(). */
+static const char *fno_name(const FILINFO *fi)
+{
+    return fi->altname[0] ? fi->altname : fi->fname;
+}
+
+/* Convert a VFS path under PLUGGY_PROGRAMS_PATH to a FatFs path.  The RO
+ * FAT is the only FatFs volume, so it is logical drive 0 and the drive
+ * prefix can be omitted.  Returns a pointer into (or past) vfs. */
+static const char *fatfs_path(const char *vfs)
+{
+    size_t base = sizeof PLUGGY_PROGRAMS_PATH - 1;
+    if (! strncmp(vfs, PLUGGY_PROGRAMS_PATH, base))
+        vfs += base;
+    if (*vfs == 0)
+        return "/";
+    return vfs;
 }
 
 static const char *dir_relative(char *buffer, const char *cwd, const char *name)
@@ -514,18 +541,21 @@ static void dir_open(const char *name)
     const char *s;
     dir_close();
     if ((s = dir_relative(full, s_path, name))) {
-        s_dir = opendir(s);
-        ESP_LOGI(TAG, "dir_open('%s') %s", s, s_dir ? "ok" : "fail");
-        if (s_dir) {
+        FRESULT res = f_opendir(&s_dir, fatfs_path(s));
+        ESP_LOGI(TAG, "dir_open('%s') %s", s, res == FR_OK ? "ok" : "fail");
+        if (res == FR_OK) {
             strcpy(s_path, s);
+            s_dir_open = true;
             s = strrchr(s_path, '/');
             s_backdir = (s && s > s_path);
         }
     }
-    if (! s_dir) {
+    if (! s_dir_open) {
         strcpy(s_path, PLUGGY_PROGRAMS_PATH);
-        s_dir = opendir(s_path);
-        ESP_LOGE(TAG, "reverting to dir_open('%s') %s", s_path, s_dir ? "ok" : "fail");
+        FRESULT res = f_opendir(&s_dir, fatfs_path(s_path));
+        ESP_LOGE(TAG, "reverting to dir_open('%s') %s", s_path,
+                 res == FR_OK ? "ok" : "fail");
+        s_dir_open = (res == FR_OK);
         s_backdir = false;
     }
 }
@@ -560,7 +590,7 @@ static void dir_send_listing(void)
     int index = 0;
     memset(frame, 0, LOADER_FRAMELEN);
     for(;;) {
-        if (! s_dir) {
+        if (! s_dir_open) {
             exhausted = true;
             dir_pack_entry(payload, &index, ENTRY_ERROR, "SDCard Error");
             break;
@@ -569,30 +599,31 @@ static void dir_send_listing(void)
             dir_pack_entry(payload, &index, ENTRY_DIR, "..");
             s_backdir = false;
         }
-        if (! s_dirent) {
-            s_dirent = readdir(s_dir);
-            if (! s_dirent) {
+        if (! s_have_fno) {
+            if (f_readdir(&s_dir, &s_fno) != FR_OK || ! s_fno.fname[0]) {
                 exhausted = true;
-                rewinddir(s_dir);
+                f_rewinddir(&s_dir);
                 break;
             }
+            s_have_fno = true;
         }
-        if (s_dirent->d_name[0] == '.')
+        const char *name = fno_name(&s_fno);
+        if (s_fno.fname[0] == '.')
             goto skip;
-        if (s_dirent->d_type == DT_DIR)
+        if (s_fno.fattrib & AM_DIR)
             type = ENTRY_DIR;
-        else if (has_gt1_extension(s_dirent->d_name))
+        else if (has_gt1_extension(name))
             type = ENTRY_FILE;
         else
             goto skip;
-        if (strlen(s_dirent->d_name) > DIR_NAME_MAX)
+        if (strlen(name) > DIR_NAME_MAX)
             goto skip;
-        if (! dir_pack_entry(payload, &index, type, s_dirent->d_name)) {
+        if (! dir_pack_entry(payload, &index, type, name)) {
             exhausted = false;
             break;
         }
     skip:
-        s_dirent = NULL;
+        s_have_fno = false;
     }
     frame[0] = exhausted;
     frame[1] = index + (frame[0] << 6);   /* length, 6 bits */
