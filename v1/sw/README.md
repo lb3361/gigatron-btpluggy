@@ -4,8 +4,12 @@
 
 Esptool command to flash:
 ```
+$ gunzip -k bin/btpluggy-merged.bin
 $ esptool --chip esp32 -p /dev/...PORT...  write-flash 0x0 bin/btpluggy-merged.bin
 ```
+Alternatively use image `btpluggy-with-fat.bin` which also contains
+a fat image with programs made available to the loader.
+
 
 ## Compilation
 

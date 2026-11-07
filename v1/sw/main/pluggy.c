@@ -43,52 +43,37 @@ static const char *TAG = "PLUGGY";
 #define PLUGGY_PROGRAMS_PATH  "/programs"  /* RO FAT: programs for the loader */
 #define PLUGGY_SPIFFS_LABEL   "storage"
 #define PLUGGY_FAT_LABEL      "fat"
-
-/* Browser protocol: the Gigatron sends single-byte commands in the control
- * range; OPEN and EXEC carry a NUL-terminated name.  Anything else that
- * arrives is a program to record.  Bytes arrive slowly (~1 bit per video
- * frame), so programs are streamed straight to SPIFFS with stdio buffering
- * instead of held in a big RAM buffer. */
-typedef enum {
-    CMD_SD_LIST  = 1,   /* send the next chunk of the directory listing */
-    CMD_SD_EXEC  = 2,   /* transfer and execute <name> */
-    CMD_SD_OPEN  = 3,   /* enter directory <name> ("" = root, ".." = parent) */
-    CMD_SD_CLOSE = 4,   /* leave the browser protocol */
-    CMD_SD_BEGIN = 5,   /* mount the store */
-    CMD_SD_INIT  = 6,   /* enter the browser protocol */
-} sd_cmd_t;
-
-#define PLUGGY_CMD_MAX_LEN   64   /* longest name accepted in one command */
+#define PLUGGY_PATH_MAX       120
+#define PLUGGY_QUEUE_SIZE     8
 
 /* All outbound work (key bindings and browser commands) is funnelled through
  * one queue into one worker task, which makes the transfers mutually exclusive
  * by construction and keeps the directory state single-threaded. */
 typedef enum {
-    /* key-binding commands mirror sd_cmd_t (1..6) so RX can map them
-     * arithmetically; key commands live in a separate range */
-    PCMD_SD_LIST  = CMD_SD_LIST,
-    PCMD_SD_EXEC  = CMD_SD_EXEC,
-    PCMD_SD_OPEN  = CMD_SD_OPEN,
-    PCMD_SD_CLOSE = CMD_SD_CLOSE,
-    PCMD_SD_BEGIN = CMD_SD_BEGIN,
-    PCMD_SD_INIT  = CMD_SD_INIT,
-    PCMD_HELP = 16, PCMD_LOAD_GT1, PCMD_REPLAY,
+    /* Browser protocol */
+    CMD_SD_LIST   = 1,   /* send the next chunk of the directory listing */
+    CMD_SD_EXEC   = 2,   /* transfer and execute <name> */
+    CMD_SD_OPEN   = 3,   /* enter directory <name> ("" = root, ".." = parent) */
+    CMD_SD_CLOSE  = 4,   /* leave the browser protocol */
+    CMD_SD_BEGIN  = 5,   /* mount the store */
+    CMD_SD_INIT   = 6,   /* enter the browser protocol */
+    /* Original pluggy commands */
+    CMD_HELP      = 100,
+    CMD_LOAD_GT1  = 101,
+    CMD_REPLAY    = 102,
 } pcmd_t;
 
-#define PLUGGY_NAME_MAX    40
-#define PLUGGY_PATH_MAX    120
-#define PLUGGY_QUEUE_SIZE  8
 
 static rmt_channel_handle_t rx_chan = NULL;
 static rmt_symbol_word_t rx_symbols[4];
 
 typedef struct {
-    int framecount;
     int bit;
+    int framecount;
 } rmsg_t;
 
 static QueueHandle_t rx_queue = NULL;
-static TaskHandle_t s_gigatron_rx_task_handle = NULL;
+static TaskHandle_t s_pluggy_rx_task_handle = NULL;
 
 typedef struct {
     pcmd_t cmd;
@@ -105,25 +90,26 @@ static void pluggy_rx_cb(int byte);
 IRAM_ATTR
 static bool rmt_rx_callback(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *edata, void *user_ctx)
 {
-    int num_symbols = edata->num_symbols;
+    int bit = -1;
     rmt_symbol_word_t s0 = edata->received_symbols[0];
     rmt_symbol_word_t s1 = edata->received_symbols[1];
-    rmsg_t rmsg;
-    rmsg.framecount=irq.framecount;
-    rmsg.bit = -1;
-    if (num_symbols == 2
+    if (edata->num_symbols == 2
         && s0.duration0 + s0.duration1 + s1.duration0 < 80 && s0.duration1 > 15
         && s0.level0 == 0 && s0.level1 == 1 && s1.level0 == 0 )
         {
-            irq.inject = 0xff; /* silence inputs */
-            rmsg.bit = (s1.duration0 > s0.duration0);
+            irq.inject = 0xff; /* silence inputs for a couple frames */
+            irq.delay = 2;
+            bit = (s1.duration0 > s0.duration0);
         }
+    rmsg_t rmsg;
+    rmsg.bit = bit;
+    rmsg.framecount = irq.framecount;
     BaseType_t woken = pdFALSE;
     xQueueSendFromISR(rx_queue, &rmsg, &woken);
     return woken == pdTRUE;
 }
 
-void gigatron_rx_task(void *arg) {
+void pluggy_rx_task(void *arg) {
     ESP_LOGI(TAG, "Gigatron RX task started on core %d", xPortGetCoreID());
     /* create rx channel */
     rmt_rx_channel_config_t rmt_rx_config = {
@@ -168,6 +154,7 @@ void gigatron_rx_task(void *arg) {
             pluggy_rx_cb(-1);
         }
         if (rmsg.bit >= 0) {
+            ESP_LOGD(TAG,"rx: bit %d inbit %02x framecount %d", rmsg.bit, rx_inbit, rmsg.framecount);
             rx_frame = rmsg.framecount;
             if (rmsg.bit)
                 rx_byte |= rx_inbit;
@@ -214,7 +201,7 @@ typedef enum { RX_IDLE = 0, RX_PROGRAM, RX_COMMAND } rx_state_t;
 static rx_state_t rx_state = RX_IDLE;
 static FILE      *rx_file = NULL;
 static size_t     rx_bytes = 0;
-static uint8_t    rx_cmd[PLUGGY_CMD_MAX_LEN];
+static uint8_t    rx_cmd[PLUGGY_PATH_MAX];
 static size_t     rx_cmd_len = 0;
 
 /* Called from the RX task with each received byte, then -1 at end of
@@ -244,28 +231,35 @@ static void pluggy_rx_cb(int byte)
     uint8_t b = (uint8_t)byte;
     switch (rx_state) {
     case RX_IDLE:                             /* first byte decides the mode */
-        if (b >= CMD_SD_LIST && b <= CMD_SD_INIT) {
-            ESP_LOGI(TAG, "RX: command byte %d", b);
-            if (b == CMD_SD_EXEC || b == CMD_SD_OPEN) {
-                rx_state = RX_COMMAND;        /* collect the name */
-                rx_cmd[0] = b;
-                rx_cmd_len = 1;
-            } else {
-                post_pcmd((pcmd_t)(PCMD_SD_LIST + (b - CMD_SD_LIST)), NULL);
+        if (b >= 32)
+            {
+                rx_file = fopen(PLUGGY_SAVED_FILE, "wb");
+                if (!rx_file) {
+                    ESP_LOGE(TAG, "Cannot open %s for writing", PLUGGY_SAVED_FILE);
+                    return;
+                }
+                rx_state = RX_PROGRAM;
+                rx_bytes = 0;
+                ESP_LOGI(TAG, "RX: program mode, first byte 0x%02x", b);
+                fputc(b, rx_file);
+                rx_bytes++;
+            }                
+        if (b >= CMD_SD_LIST && b <= CMD_SD_INIT)
+            {
+                ESP_LOGI(TAG, "RX: command byte %d", b);
+                if (b == CMD_SD_EXEC || b == CMD_SD_OPEN) {
+                    rx_state = RX_COMMAND;        /* collect the name */
+                    rx_cmd[0] = b;
+                    rx_cmd_len = 1;
+                } else {
+                    post_pcmd((pcmd_t)(b), NULL);
+                }
             }
-        } else if (b >= 32) {
-            rx_file = fopen(PLUGGY_SAVED_FILE, "wb");
-            if (!rx_file) {
-                ESP_LOGE(TAG, "Cannot open %s for writing", PLUGGY_SAVED_FILE);
-                return;                        /* stay IDLE, drop this stream */
-            }
-            rx_state = RX_PROGRAM;
-            rx_bytes = 0;
-            ESP_LOGI(TAG, "RX: program mode, first byte 0x%02x", b);
-            fputc(b, rx_file);
-            rx_bytes++;
+        else if (b == CMD_SD_BEGIN * 2) {
+            ESP_LOGI(TAG, "RX: byte 0x%02x is phantom BEGIN (state=IDLE)", b);
+            post_pcmd((pcmd_t)(CMD_SD_BEGIN), NULL);
         } else {
-            ESP_LOGD(TAG, "RX: byte 0x%02x ignored (state=IDLE)", b);
+            ESP_LOGI(TAG, "RX: byte 0x%02x ignored (state=IDLE)", b);
         }
         break;
     case RX_PROGRAM:
@@ -285,9 +279,9 @@ static void pluggy_rx_cb(int byte)
                      rx_cmd[0] == CMD_SD_EXEC ? "EXEC" : "OPEN",
                      (char *)rx_cmd + 1);
             if (rx_cmd[0] == CMD_SD_EXEC)
-                post_pcmd(PCMD_SD_EXEC, (char *)rx_cmd + 1);
+                post_pcmd(CMD_SD_EXEC, (char *)rx_cmd + 1);
             else
-                post_pcmd(PCMD_SD_OPEN, (char *)rx_cmd + 1);
+                post_pcmd(CMD_SD_OPEN, (char *)rx_cmd + 1);
             rx_state = RX_IDLE;
             rx_cmd_len = 0;
         } else if (b >= 32 && b < 127 && rx_cmd_len < sizeof rx_cmd - 1) {
@@ -439,7 +433,7 @@ static esp_err_t pluggy_copy_text(const char *fname)
 
 /* ── browser directory state (owned by the worker task) ──────────── */
 
-#define DIR_NAME_MAX   24   /* browser packets cap names at 8.3 */
+#define DIR_NAME_MAX   22   /* browser packets cap name length */
 #define DIR_PAYLOAD    63   /* payload bytes in a listing frame */
 #define ENTRY_FILE     1
 #define ENTRY_DIR      2
@@ -454,6 +448,7 @@ static bool    s_dir_open = false;
 static FILINFO s_fno;          /* pending entry, like the old s_dirent */
 static bool    s_have_fno = false;
 static bool    s_backdir = false;
+static bool    s_shortnames = true;
 static char    s_path[PLUGGY_PATH_MAX];   /* current dir (VFS path) */
 
 static void wake_browser(void)
@@ -481,12 +476,18 @@ static void dir_close(void)
     s_have_fno = false;
 }
 
-/* The name to show the browser: the 8.3 short name when one exists, else
- * the (already short) primary name.  This is the name that round-trips
- * back through OPEN/EXEC and fopen(). */
+/* The name to show the browser.
+ * Either the long name or the short name, depending
+ * on the long name length and the s_shortname override.
+ * Flag s_shortname is set during CmdOpen
+ * and cleared during CmdInit (otherwise a no-op)
+ */
 static const char *fno_name(const FILINFO *fi)
 {
-    return fi->altname[0] ? fi->altname : fi->fname;
+    if (s_shortnames || strlen(fi->fname) > DIR_NAME_MAX)
+        if (fi->altname[0])
+            return fi->altname;
+    return fi->fname;
 }
 
 /* Convert a VFS path under PLUGGY_PROGRAMS_PATH to a FatFs path.  The RO
@@ -659,11 +660,11 @@ static void pluggy_worker_task(void *arg)
         if (xQueueReceive(cmd_queue, &m, portMAX_DELAY) != pdTRUE)
             continue;
         switch (m.cmd) {
-        case PCMD_HELP:
+        case CMD_HELP:
             ESP_LOGI(TAG, "worker: HELP");
             pluggy_help_screen();
             break;
-        case PCMD_LOAD_GT1: {
+        case CMD_LOAD_GT1: {
             ESP_LOGI(TAG, "worker: LOAD_GT1 %s", m.arg);
             char full[PLUGGY_PATH_MAX];
             const char *s;
@@ -671,34 +672,36 @@ static void pluggy_worker_task(void *arg)
                 gt1_post_file(s);
             break;
         }
-        case PCMD_REPLAY:
+        case CMD_REPLAY:
             ESP_LOGI(TAG, "worker: REPLAY %s", m.arg);
             pluggy_copy_text(m.arg);
             break;
         /* Browser protocol commands */
-        case PCMD_SD_INIT:
+        case CMD_SD_INIT:
             ESP_LOGI(TAG, "worker: SD_INIT");
+            s_shortnames = false;
             break;
-        case PCMD_SD_BEGIN:
+        case CMD_SD_BEGIN:
             ESP_LOGI(TAG, "worker: SD_BEGIN");
             s_path[0] = 0;
             wake_browser();
             break;
-        case PCMD_SD_OPEN:
+        case CMD_SD_OPEN:
             ESP_LOGI(TAG, "worker: SD_OPEN '%s'", m.arg);
             dir_open(m.arg);
+            s_shortnames = true;
             wake_browser();
             break;
-        case PCMD_SD_LIST:
+        case CMD_SD_LIST:
             ESP_LOGI(TAG, "worker: SD_LIST");
             dir_send_listing();
             break;
-        case PCMD_SD_EXEC: {
+        case CMD_SD_EXEC: {
             ESP_LOGI(TAG, "worker: SD_EXEC %s", m.arg);
             dir_exec(m.arg);
             break;
         }
-        case PCMD_SD_CLOSE:
+        case CMD_SD_CLOSE:
             ESP_LOGI(TAG, "worker: SD_CLOSE");
             dir_close();
             break;
@@ -851,17 +854,17 @@ void pluggy_handle_ctrl_fn(int fn)
     }
     if (fn == 1) {
         /* Ctrl+F1: list the available programs on the Loader screen */
-        post_pcmd(PCMD_HELP, NULL);
+        post_pcmd(CMD_HELP, NULL);
     } else if (fn >= 2 && fn <= 11) {
         /* Ctrl+F2..F11: load the n-th gt1 file from the FAT partition */
         char *path = pluggy_nth_gt1(fn - 1);
         if (path)
-            post_pcmd(PCMD_LOAD_GT1, path);
+            post_pcmd(CMD_LOAD_GT1, path);
         else
             ESP_LOGW(TAG, "No gt1 file #%d in %s", fn - 1, PLUGGY_PROGRAMS_PATH);
     } else if (fn == 12) {
         /* Ctrl+F12: replay the recorded program */
-        post_pcmd(PCMD_REPLAY, PLUGGY_SAVED_FILE);
+        post_pcmd(CMD_REPLAY, PLUGGY_SAVED_FILE);
     }
 }
 
@@ -896,13 +899,13 @@ esp_err_t pluggy_init(void)
     /* rx queue and task */
     if (! rx_queue)
         rx_queue = xQueueCreate(PLUGGY_QUEUE_SIZE, sizeof(rmsg_t));
-    if (! s_gigatron_rx_task_handle) {
-        err = xTaskCreatePinnedToCore(gigatron_rx_task,
-                                      "gigatron_rx",
+    if (! s_pluggy_rx_task_handle) {
+        err = xTaskCreatePinnedToCore(pluggy_rx_task,
+                                      "pluggy_rx",
                                       PLUGGY_RX_TASK_STACK,
                                       NULL,
                                       PLUGGY_RX_TASK_PRIORITY,
-                                      &s_gigatron_rx_task_handle,
+                                      &s_pluggy_rx_task_handle,
                                       PLUGGY_RX_TASK_CORE );
         if (err != pdPASS) {
             ESP_LOGE(TAG, "Failed to create gigatron rx task: %d", err);

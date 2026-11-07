@@ -68,8 +68,8 @@ typedef struct gigatron_irq_data_s {
   /* the following are used to initialize hc595ptr on videoline -28 */
   uint8_t inject;               /* overrides serialraw when not 0xff */
   uint8_t *loaderframe;         /* next loader frame to pass */
-  int     loaderframelen;       /* loader frame length, 64 or 65 */
-
+  int loaderframelen;           /* loader frame length, 64 or 65 */
+  int delay;                    /* delay this many frames before procesing new inputs */
 } gigatron_irq_data_t;
 
 

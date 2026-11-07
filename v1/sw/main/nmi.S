@@ -13,16 +13,16 @@
         .type   irq, @object
         .size   irq, 36
 irq:
-        .word   irq+5
-        .byte   0
-        .byte   -1
+        .word   irq+5   /* hc595ptr */
+        .byte   0       /* hc595ptrlen */
+        .byte   -1      /* hc595state */
         .zero   14
-        .word   0
-        .byte   -1
-        .zero   3
-        .word   0
-        .word   0
-
+        .word   0       /* bytemap */
+        .byte   -1      /* inject */
+        .zero   3       /* pad */
+        .word   0       /* loaderframe */
+        .word   0       /* loaderframelen */
+	.word   0       /* delay */
 /**
  *  Private area to save the register during nmi
  *  This works because the nmi handler will return
@@ -119,9 +119,12 @@ xt_nmi:
 	j	.L1             //| else
 .L4:
 	l32r	a8, .LC1
+	l32i.n	a9, a8, 36
+	bgei    a9, 1, .L5      //| if (d->delay > 0)
 	l8ui	a9, a8, 24
 	movi	a8, 0xff
-	beq	a9, a8, .L6     //| if (d->inject != 0xff)
+	beq	a9, a8, .L6     //|     || d->inject != 0xff)
+.L5:
 	l32r	a8, .LC1
 	l32r	a9, .LC2
 	s32i.n	a9, a8, 0       //|| d->hc595ptr = &inject

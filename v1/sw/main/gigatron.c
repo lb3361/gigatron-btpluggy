@@ -34,7 +34,8 @@ gigatron_irq_data_t irq = {
     .bytemap = 0,
     .inject = 0xff,
     .loaderframe = 0,
-    .loaderframelen = 0
+    .loaderframelen = 0,
+    .delay = 0
 };
 
 IRAM_ATTR
@@ -67,7 +68,7 @@ void nmi_handler(void)
             d->hc595ptrlen = d->loaderframelen;
             d->loaderframelen = 0;
             d->loaderframe = 0;
-        } else if (d->inject != 0xff) {
+        } else if (d->delay > 0 || d->inject != 0xff) {
             d->hc595ptr = &d->inject;
             d->hc595ptrlen = 0;
         } else {
@@ -201,12 +202,11 @@ void gigatron_task(void *arg) {
         /* Process event injection state machine */
         input_event_t ev;
         static uint8_t *delayedfree[3];
-        static int delay = 0;
         static uint8_t checksum = 'g';
         uint8_t nchecksum = 'g';
-        if (delay > 0)
+        if (irq.delay > 0)
             {
-                delay--;
+                irq.delay--;
             }
         else if (input_event_queue
                  && xQueueReceive(input_event_queue, &ev, 0) == pdTRUE)
@@ -214,7 +214,7 @@ void gigatron_task(void *arg) {
                 irq.inject = ev.byte;
                 irq.loaderframelen = ev.framelen;
                 delayedfree[2] = irq.loaderframe = ev.frame;
-                delay = ev.duration;
+                irq.delay = ev.duration;
                 if (ev.framechk) {
                     ev.frame[ev.framechk] -= checksum;
                     nchecksum = ev.frame[ev.framechk];
