@@ -128,8 +128,6 @@ typedef struct {
     int framechk;
 } input_event_t;
 
-static uint8_t checksum = 'g';
-
 
 /* This ISR captures processes the /IE pulse and the PSEUDO_VBL pulses
    created by the NMI handler to releases the gigatron_task */
@@ -204,10 +202,11 @@ void gigatron_task(void *arg) {
         input_event_t ev;
         static uint8_t *delayedfree[3];
         static int delay = 0;
+        static uint8_t checksum = 'g';
+        uint8_t nchecksum = 'g';
         if (delay > 0)
             {
                 delay--;
-                checksum = 'g';
             }
         else if (input_event_queue
                  && xQueueReceive(input_event_queue, &ev, 0) == pdTRUE)
@@ -218,11 +217,10 @@ void gigatron_task(void *arg) {
                 delay = ev.duration;
                 if (ev.framechk) {
                     ev.frame[ev.framechk] -= checksum;
-                    checksum = ev.frame[ev.framechk];
-                } else {
-                    checksum = 'g';
+                    nchecksum = ev.frame[ev.framechk];
                 }
             }
+        checksum = nchecksum;
 #if DEBUG
         /* Debug output */
         if (irq.framecount % 60 == 0 && irq.missed)
