@@ -244,7 +244,7 @@ static void pluggy_rx_cb(int byte)
                 fputc(b, rx_file);
                 rx_bytes++;
             }                
-        if (b >= CMD_SD_LIST && b <= CMD_SD_INIT)
+        else if (b >= CMD_SD_LIST && b <= CMD_SD_INIT)
             {
                 ESP_LOGI(TAG, "RX: command byte %d", b);
                 if (b == CMD_SD_EXEC || b == CMD_SD_OPEN) {
@@ -255,12 +255,15 @@ static void pluggy_rx_cb(int byte)
                     post_pcmd((pcmd_t)(b), NULL);
                 }
             }
-        else if (b == CMD_SD_BEGIN * 2) {
-            ESP_LOGI(TAG, "RX: byte 0x%02x is phantom BEGIN (state=IDLE)", b);
-            post_pcmd((pcmd_t)(CMD_SD_BEGIN), NULL);
-        } else {
-            ESP_LOGI(TAG, "RX: byte 0x%02x ignored (state=IDLE)", b);
-        }
+        else if (b == CMD_SD_BEGIN * 2)
+            {
+                ESP_LOGI(TAG, "RX: byte 0x%02x is phantom BEGIN (state=IDLE)", b);
+                post_pcmd((pcmd_t)(CMD_SD_BEGIN), NULL);
+            }
+        else
+            {
+                ESP_LOGI(TAG, "RX: byte 0x%02x ignored (state=IDLE)", b);
+            }
         break;
     case RX_PROGRAM:
         if (fputc(b, rx_file) == EOF) {

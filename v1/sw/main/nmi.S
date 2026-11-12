@@ -11,7 +11,7 @@
         .data
         .align  4
         .type   irq, @object
-        .size   irq, 36
+        .size   irq, 40
 irq:
         .word   irq+5   /* hc595ptr */
         .byte   0       /* hc595ptrlen */
@@ -22,7 +22,7 @@ irq:
         .zero   3       /* pad */
         .word   0       /* loaderframe */
         .word   0       /* loaderframelen */
-	.word   0       /* delay */
+        .word   0       /* delay */
 /**
  *  Private area to save the register during nmi
  *  This works because the nmi handler will return

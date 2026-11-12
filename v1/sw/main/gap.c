@@ -636,6 +636,12 @@ esp_err_t gap_start_pairing(uint32_t timeout_seconds)
     case S_IDLE:
         s_state = S_PAIRING;
         esp_timer_start_once(s_pairing_timer, timeout_seconds * 1000000ULL);
+#if CONFIG_BT_HID_HOST_ENABLED
+        /* use io_cap_none to ease pairing when pairing mode is active */
+        esp_bt_sp_param_t sp_type = ESP_BT_SP_IOCAP_MODE;
+        esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_NONE;
+        esp_bt_gap_set_security_param(sp_type, &iocap, sizeof(iocap));
+#endif
         ESP_LOGI(TAG, ">>> PAIRING MODE ACTIVE (%"PRIu32"s) <<<", timeout_seconds);
         if (s_event_cb) s_event_cb(GAP_EVT_PAIRING_START, NULL);
         /* Wake the scan task */
@@ -653,6 +659,10 @@ esp_err_t gap_stop_pairing(void)
         esp_timer_stop(s_pairing_timer);
 #if CONFIG_BT_HID_HOST_ENABLED
         esp_bt_gap_cancel_discovery();
+        /* use io_cap_io to catch pairing attempts when not in pairing mode */
+        esp_bt_sp_param_t sp_type = ESP_BT_SP_IOCAP_MODE;
+        esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_IO;
+        esp_bt_gap_set_security_param(sp_type, &iocap, sizeof(iocap));
 #endif
 #if CONFIG_BT_BLE_ENABLED
         esp_ble_gap_stop_scanning();
