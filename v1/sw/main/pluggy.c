@@ -26,16 +26,17 @@ static const char *TAG = "PLUGGY";
 /* ── configuration ───────────────────────────────────────────────── */
 
 /* Gigatron receive task */
-#define PLUGGY_RX_TASK_PRIORITY    5
-#define PLUGGY_RX_TASK_STACK       4096
-#define PLUGGY_RX_TASK_CORE        0
+#define PLUGGY_RX_TASK_PRIORITY   5
+#define PLUGGY_RX_TASK_STACK      4096
+#define PLUGGY_RX_TASK_CORE       0
+#define PLUGGY_RX_QUEUE_SIZE      8
+#define PLUGGY_RX_TIMEOUT_FRAMES  30   /* timeout to close a save */
 
-/* Program replay task */
-#define PLUGGY_REPLAY_TASK_PRIORITY  5
-#define PLUGGY_REPLAY_TASK_STACK     4096
-#define PLUGGY_REPLAY_TASK_CORE      0
-#define PLUGGY_FRAME_MS              17   /* ~60 Hz video frame */
-#define PLUGGY_RX_TIMEOUT_FRAMES     30   /* timeout to close a save */
+/* Program cmd task */
+#define PLUGGY_CMD_TASK_PRIORITY  5
+#define PLUGGY_CMD_TASK_STACK     4096
+#define PLUGGY_CMD_TASK_CORE      0
+#define PLUGGY_CMD_QUEUE_SIZE     8
 
 /* Mount points and partition labels for the two program stores. */
 #define PLUGGY_SAVED_PATH     "/saved"     /* RW SPIFFS: recorded BASIC programs */
@@ -44,11 +45,25 @@ static const char *TAG = "PLUGGY";
 #define PLUGGY_SPIFFS_LABEL   "storage"
 #define PLUGGY_FAT_LABEL      "fat"
 #define PLUGGY_PATH_MAX       120
-#define PLUGGY_QUEUE_SIZE     8
+
+/* Bits received by RMT are queued and processed by the rx task. */
+static rmt_channel_handle_t rx_chan = NULL;
+static rmt_symbol_word_t rx_symbols[4];
+static QueueHandle_t rx_queue = NULL;
+static TaskHandle_t s_pluggy_rx_task_handle = NULL;
+
+typedef struct {
+    int bit;
+    int frame;
+} rmsg_t;
+
 
 /* All outbound work (key bindings and browser commands) is funnelled through
  * one queue into one worker task, which makes the transfers mutually exclusive
  * by construction and keeps the directory state single-threaded. */
+static QueueHandle_t cmd_queue = NULL;
+static TaskHandle_t s_gigatron_cmd_task_handle = NULL;
+
 typedef enum {
     /* Browser protocol */
     CMD_SD_LIST   = 1,   /* send the next chunk of the directory listing */
@@ -63,25 +78,35 @@ typedef enum {
     CMD_REPLAY    = 102,
 } pcmd_t;
 
-
-static rmt_channel_handle_t rx_chan = NULL;
-static rmt_symbol_word_t rx_symbols[4];
-
-typedef struct {
-    int bit;
-    int framecount;
-} rmsg_t;
-
-static QueueHandle_t rx_queue = NULL;
-static TaskHandle_t s_pluggy_rx_task_handle = NULL;
-
 typedef struct {
     pcmd_t cmd;
     char arg[PLUGGY_PATH_MAX];
 } pmsg_t;
 
-static QueueHandle_t cmd_queue = NULL;
-static TaskHandle_t s_gigatron_cmd_task_handle = NULL;
+
+/* ── cmd queue ─────────────────────────────────────────── */
+
+/* All outbound work (Ctrl+Fn bindings and browser commands) is funnelled
+ * into one queue drained by one worker task.  A single worker makes the
+ * transfers mutually exclusive by construction (no s_transfering flag) and
+ * keeps the directory state single-threaded.  The RX task only decodes
+ * bytes and enqueues; it never blocks on the Gigatron. */
+
+static void post_pcmd(pcmd_t cmd, const char *arg)
+{
+    if (! cmd_queue) {
+        ESP_LOGE(TAG, "post_pcmd cmd=%d: queue not created", cmd);
+        return;
+    }
+    pmsg_t m = { .cmd = cmd };
+    m.arg[0] = '\0';
+    if (arg)
+        strlcpy(m.arg, arg, sizeof m.arg);
+    ESP_LOGI(TAG, "post cmd=%d arg='%s'", cmd, m.arg);
+    if (xQueueSend(cmd_queue, &m, pdMS_TO_TICKS(10)) != pdTRUE)
+        ESP_LOGW(TAG, "command queue full, dropped cmd %d", cmd);
+}
+
 
 /* ── receiving bytes from the gigatron ───────────────────────────── */
 
@@ -97,13 +122,14 @@ static bool rmt_rx_callback(rmt_channel_handle_t channel, const rmt_rx_done_even
         && s0.duration0 + s0.duration1 + s1.duration0 < 80 && s0.duration1 > 15
         && s0.level0 == 0 && s0.level1 == 1 && s1.level0 == 0 )
         {
-            irq.inject = 0xff; /* silence inputs for a couple frames */
-            irq.delay = 2;
             bit = (s1.duration0 > s0.duration0);
+            /* prevent SYS_SendSerial from aborting */
+            irq.inject = 0xff;
+            irq.delay = 2;
         }
     rmsg_t rmsg;
     rmsg.bit = bit;
-    rmsg.framecount = irq.framecount;
+    rmsg.frame = irq.framecount;
     BaseType_t woken = pdFALSE;
     xQueueSendFromISR(rx_queue, &rmsg, &woken);
     return woken == pdTRUE;
@@ -132,6 +158,7 @@ void pluggy_rx_task(void *arg) {
     /* statics */
     static int rx_frame = 0;
     static uint8_t rx_byte = 0;
+    static uint8_t rx_last = -1;
     static uint8_t rx_inbit = 1;
     static int rx_bitcount = 0;
     /* loop */
@@ -142,61 +169,47 @@ void pluggy_rx_task(void *arg) {
         /* wait bit */
         rmsg_t rmsg;
         xQueueReceive(rx_queue, &rmsg, portMAX_DELAY);
-
-        if (rx_inbit > 1 && rmsg.framecount > rx_frame + 1) {
-            ESP_LOGI(TAG,"rx: incomplete byte");
-            rx_byte = 0;
-            rx_inbit = 1;
-        }
-        if (rx_bitcount > 0 && rmsg.framecount > rx_frame + PLUGGY_RX_TIMEOUT_FRAMES) {
-            ESP_LOGI(TAG,"rx: timeout");
-            rx_bitcount = 0;
-            pluggy_rx_cb(-1);
-        }
-        if (rmsg.bit >= 0) {
-            ESP_LOGD(TAG,"rx: bit %d inbit %02x framecount %d", rmsg.bit, rx_inbit, rmsg.framecount);
-            rx_frame = rmsg.framecount;
-            if (rmsg.bit)
-                rx_byte |= rx_inbit;
-            rx_inbit <<= 1;
-            rx_bitcount += 1;
-            if (! rx_inbit) {
-                ESP_LOGI(TAG,"rx: received byte %02x", rx_byte);
-                pluggy_rx_cb(rx_byte);
-                rx_inbit = 1;
-                rx_byte = 0;
+        if (rmsg.frame - rx_frame > 1)
+            {
+                if (rx_inbit > 1) {
+                    if (rx_inbit == 2 && rx_byte == 0  && rx_last == 0x0a) {
+                        ESP_LOGI(TAG,"rx: phantom sd_begin hack");
+                        pluggy_rx_cb(rx_last >> 1); /* phantom sd_init/sd_begin pair */
+                    } else {
+                        ESP_LOGI(TAG,"rx: incomplete byte");
+                    }
+                    rx_byte = 0;
+                    rx_inbit = 1;
+                }
+                if (rx_bitcount && rmsg.frame - rx_frame > PLUGGY_RX_TIMEOUT_FRAMES) {
+                    ESP_LOGI(TAG,"rx: timeout");
+                    rx_bitcount = 0;
+                    pluggy_rx_cb(-1);
+                }
+                rx_last = -1;
+            }        
+        /* good bit */
+        if (rmsg.bit >= 0)
+            {
+                ESP_LOGI(TAG,"rx: bit %d inbit %02x frame %d", rmsg.bit, rx_inbit, rmsg.frame);
+                rx_frame = rmsg.frame;
+                if (rmsg.bit)
+                    rx_byte |= rx_inbit;
+                rx_inbit <<= 1;
+                rx_bitcount += 1;
+                if (! rx_inbit) {
+                    ESP_LOGI(TAG,"rx: received byte %02x", rx_byte);
+                    pluggy_rx_cb(rx_byte);
+                    rx_last = rx_byte;
+                    rx_inbit = 1;
+                    rx_byte = 0;
+                }
             }
-        }
     }
 }
 
-/* ── outbound work queue ─────────────────────────────────────────── */
+/* ── processing received bytes ───────────────────────────── */
 
-/* All outbound work (Ctrl+Fn bindings and browser commands) is funnelled
- * into one queue drained by one worker task.  A single worker makes the
- * transfers mutually exclusive by construction (no s_transfering flag) and
- * keeps the directory state single-threaded.  The RX task only decodes
- * bytes and enqueues; it never blocks on the Gigatron. */
-
-static void post_pcmd(pcmd_t cmd, const char *arg)
-{
-    if (! cmd_queue) {
-        ESP_LOGE(TAG, "post_pcmd cmd=%d: queue not created", cmd);
-        return;
-    }
-    pmsg_t m = { .cmd = cmd };
-    m.arg[0] = '\0';
-    if (arg)
-        strlcpy(m.arg, arg, sizeof m.arg);
-    ESP_LOGI(TAG, "post cmd=%d arg='%s'", cmd, m.arg);
-    if (xQueueSend(cmd_queue, &m, pdMS_TO_TICKS(10)) != pdTRUE)
-        ESP_LOGW(TAG, "command queue full, dropped cmd %d", cmd);
-}
-
-/* ── recording received programs ─────────────────────────────────── */
-
-
-/* One received stream at a time, streamed to SPIFFS as bytes arrive. */
 typedef enum { RX_IDLE = 0, RX_PROGRAM, RX_COMMAND } rx_state_t;
 static rx_state_t rx_state = RX_IDLE;
 static FILE      *rx_file = NULL;
@@ -255,11 +268,6 @@ static void pluggy_rx_cb(int byte)
                     post_pcmd((pcmd_t)(b), NULL);
                 }
             }
-        else if (b == CMD_SD_BEGIN * 2)
-            {
-                ESP_LOGI(TAG, "RX: byte 0x%02x is phantom BEGIN (state=IDLE)", b);
-                post_pcmd((pcmd_t)(CMD_SD_BEGIN), NULL);
-            }
         else
             {
                 ESP_LOGI(TAG, "RX: byte 0x%02x ignored (state=IDLE)", b);
@@ -307,15 +315,15 @@ static void pluggy_rx_cb(int byte)
  * all 60 payload bytes inluding padding.  gigatron.c patches the byte
  * to account for the running checksum of preceding continued frames. */
 
+#define LOADER_PAYLOAD   60
+#define LOADER_FRAMELEN  65
+
 static bool has_gt1_extension(const char *fname)
 {
     size_t n = strlen(fname);
     return (n > 4 && strcasecmp(fname + n - 4, ".gt1") == 0) ||
            (n > 5 && strcasecmp(fname + n - 5, ".gt1x") == 0);
 }
-
-#define LOADER_PAYLOAD   60
-#define LOADER_FRAMELEN  65
 
 static esp_err_t gt1_post_packet(uint8_t addrl, uint8_t addrh,
                                  const uint8_t *data, int len)
@@ -395,7 +403,7 @@ static esp_err_t gt1_post_file(const char *fname)
         goto end;
     if (fgetc(f) != EOF)
         ESP_LOGW(TAG, "Garbage after the end of gt1 file %s", fname);
-    ESP_LOGI(TAG, "Execution addres for gt1 file %s is 0x%02x%02x",
+    ESP_LOGI(TAG, "Execution address for gt1 file %s is 0x%02x%02x",
              fname, addrh, addrl);
     err = gt1_post_packet(addrl, addrh, data, 0);
  end:
@@ -456,19 +464,9 @@ static char    s_path[PLUGGY_PATH_MAX];   /* current dir (VFS path) */
 
 static void wake_browser(void)
 {
-    /* Release the browser's waitSDCard loop with a 0 byte.
-     * Send it as a frame because the browser code loads repeatedly.
-     */
-    enum { WAKE_FRAMES = 8 };
-    esp_err_t err = ESP_ERR_NO_MEM;
-    uint8_t *zeros = calloc(WAKE_FRAMES, 1);
-    if (zeros) {
-        err = gigatron_post_input(0xff, 0, zeros, WAKE_FRAMES,
-                                  pdMS_TO_TICKS(10));
-        if (err != ESP_OK)
-            free(zeros);
-    }
-    ESP_LOGI(TAG, "wake browser (post err=%d)", err);
+    /* Release the browser's waitSDCard loop with a 0 byte. */
+    gigatron_post_input(0, 0, 0, 0, portMAX_DELAY);
+    gigatron_post_input(0xff, 2, 0, 0, portMAX_DELAY);
 }
 
 static void dir_close(void)
@@ -901,7 +899,7 @@ esp_err_t pluggy_init(void)
         ESP_LOGI(TAG, "FAT mounted read-only at %s", PLUGGY_PROGRAMS_PATH);
     /* rx queue and task */
     if (! rx_queue)
-        rx_queue = xQueueCreate(PLUGGY_QUEUE_SIZE, sizeof(rmsg_t));
+        rx_queue = xQueueCreate(PLUGGY_RX_QUEUE_SIZE, sizeof(rmsg_t));
     if (! s_pluggy_rx_task_handle) {
         err = xTaskCreatePinnedToCore(pluggy_rx_task,
                                       "pluggy_rx",
@@ -917,15 +915,15 @@ esp_err_t pluggy_init(void)
     }
     /* cmd queue and task */
     if (! cmd_queue)
-        cmd_queue = xQueueCreate(PLUGGY_QUEUE_SIZE, sizeof(pmsg_t));
+        cmd_queue = xQueueCreate(PLUGGY_CMD_QUEUE_SIZE, sizeof(pmsg_t));
     if (! s_gigatron_cmd_task_handle) {
         err = xTaskCreatePinnedToCore(pluggy_worker_task,
                                       "pluggy_work",
-                                      PLUGGY_REPLAY_TASK_STACK,
+                                      PLUGGY_CMD_TASK_STACK,
                                       NULL,
-                                      PLUGGY_REPLAY_TASK_PRIORITY,
+                                      PLUGGY_CMD_TASK_PRIORITY,
                                       &s_gigatron_cmd_task_handle,
-                                      PLUGGY_REPLAY_TASK_CORE );
+                                      PLUGGY_CMD_TASK_CORE );
         if (err != pdPASS) {
             ESP_LOGE(TAG, "Failed to create worker task: %d", err);
             return ESP_FAIL;

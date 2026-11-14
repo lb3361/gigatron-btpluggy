@@ -10,10 +10,13 @@ $ esptool --chip esp32 -p /dev/...PORT...  write-flash 0x0 bin/btpluggy-merged.b
 Alternatively use image `btpluggy-with-fat.bin` which also contains
 a fat image with programs made available to the loader.
 
+This operation erases all previous device pairings.
+If you want to preserve the pairings, you must compile and use `idf.py flash`.
+
 
 ## Compilation
 
-Alternatively, compile with ESP-IDF 6.0.
+Alternatively, compile with ESP-IDF 6.1.
 
 ```
 $ idf.py set-target esp32
