@@ -164,11 +164,15 @@ esp_err_t gigatron_post_input(uint8_t byte, uint8_t duration,
     input_event_t ev;
     ev.byte = byte;
     ev.duration = duration;
-    ev.frame = (framelen) ? frame : NULL;
-    ev.framelen = (frame) ? abs(framelen) : 0;
-    ev.framechk = 0;
-    if (framelen < 0)
-        ev.framechk = ev.framelen - 1;
+    ev.frame = 0;
+    ev.framelen = 0;
+    ev.framechk = -1;
+    if (frame && framelen) {
+        ev.frame = frame;
+        ev.framelen = abs(framelen);
+        if (framelen < 0)
+            ev.framechk = ev.framelen - 1;
+    }
     if (xQueueSend(input_event_queue, &ev, ticks_to_wait) != pdTRUE)
         return ESP_ERR_TIMEOUT;
     return ESP_OK;
@@ -215,7 +219,7 @@ void gigatron_task(void *arg) {
                 irq.loaderframelen = ev.framelen;
                 delayedfree[2] = irq.loaderframe = ev.frame;
                 irq.delay = ev.duration;
-                if (ev.framechk) {
+                if (ev.framechk >= 0) {
                     ev.frame[ev.framechk] -= checksum;
                     nchecksum = ev.frame[ev.framechk];
                 }
