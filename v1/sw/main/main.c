@@ -53,16 +53,17 @@ static void post_input(uint8_t giga_key, uint8_t giga_buttons)
     static enum { EV_NONE, EV_KEY, EV_BUTTONS, EV_RESET } last = EV_NONE;
     /* serialize key and button events with ff separators when needed */
     if (giga_buttons == 0xff && giga_key == 0xff) {
-        gigatron_post_input(0xff, 0, 0, 0, pdMS_TO_TICKS(10));
+        if (last != EV_NONE)
+            gigatron_post_input(0xff, 0, 0, 0, pdMS_TO_TICKS(10));
         last = EV_NONE;
     } else if (last == EV_RESET) {
-        /* pass */
-    } else if (giga_buttons == 0xff) {
+        /* last = EV_RESET */
+    } else if (giga_buttons == 0xff /* giga_keys != 0xff */) {
         if (last == EV_BUTTONS)
             gigatron_post_input(0xff, 2, 0, 0, pdMS_TO_TICKS(10));
         gigatron_post_input(giga_key, 2, 0, 0, pdMS_TO_TICKS(10));
         last = EV_KEY;
-    } else if (giga_buttons == giga_key
+    } else if (giga_buttons == giga_key /* != 0xff */
                && !uxQueueMessagesWaiting(input_event_queue)) {
         gigatron_post_input(giga_buttons, 150, 0, 0, pdMS_TO_TICKS(10));
         last = EV_RESET;

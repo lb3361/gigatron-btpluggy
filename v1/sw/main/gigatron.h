@@ -52,8 +52,8 @@
  * SERCLK (HSYNC) goes LOW for approximately 4µs per scanline.  When
  * it goes HIGH, a real 74HC595 nearly instantaneously latches the
  * internal shift register on its output pins, and shifts the
- * register.  We plan to interrupt when SERCLK goes LOW and give
- * outselves about 4us to do the job.
+ * register.  We interrupt when SERCLK goes LOW and give
+ * outselves about 4us to emulate the 74HC595.
  */
 
 typedef struct gigatron_irq_data_s {
@@ -96,25 +96,57 @@ esp_err_t gigatron_init(void);
 extern QueueHandle_t input_event_queue;
 
 
-/* Post input byte into the Gigatron interface.
- * - byte: which value for serialRaw
- * - duration: for how many extra frames
- * - frame: additional data for a loader frame, or null
- * - abs(framelen): length of the additional data.
- * - ticks: how long to wait for the queue.
- * Returns ESP_OK on success or ESP_ERR_TIMEMOUT.
- * Caller retains ownership of mallocated pointer `frame`
- * until this function returns ESP_OK.
- * Negaive framelen indicate that the last frame byte is a checksum.
- * The checksum must be computed with a zero initial value
- * and the queuing code will fix it depending on the presence
- * continued frames.
+/* Post input data into the Gigatron interface.
+ *
+ * In general, what the Gigatron reads on the input port comes from
+ * serializing the famicom port data by emulating the 74hc595
+ * chip. The same value is read during a scanline. It only changes
+ * with hsync. The btpluggy can override this data in two ways
+ *
+ * - either by injecting an input byte for the precise
+ *   scanline during which the Gigatron captures serialRaw.
+ *
+ * - or by injecting a data frame. The first byte is injected in time
+ *   to be captured by serialRaw. Whenever the gigatron reads the
+ *   input port, the next byte is injected on the following scanline.
+ *   This process lasts until the end of the data frame or the next
+ *   serialRaw scanline, whichever comes first.
+ *
+ * Input override requests are queued with gigatron_post_input.
+ * The following happens whenever a request is processed.
+ *
+ * - If <frame> and <framelen> are non zero, the data frame bytes are
+ *   injected during the next video frame. A negative <framelen>
+ *   indicates that the last frame byte is interpreted as a checksum
+ *   such all frame bytes add up to zero modulo 256. This checksum
+ *   byte is then corrected to match what the Loader expects, which
+ *   itself depends on whether frames are send back-to-back or not.
+ *
+ * - Otherwise, during the following video frames, value <byte> is
+ *   injected in time to be captured in variable serialRaw and only
+ *   during that scanline.
+ *
+ * - The queue is checked after a total of <1+duration> video frames.
+ *   As long as there are no pending requests, the last injected
+ *   <byte>, if different from 0xff, keeps being injected during
+ *   serialRaw scanlines. Otherwise, if the last injected byte was
+ *   0xff, injection stops, and serialRaw receives the joystick port
+ *   data. This lasts until processing a new request.
+ *
+ * In summary, data frames always have the top priority. Otherwise
+ * serialRaw bytes are injected with timings determined by the
+ * duration of the successive posted requests. An injected byte
+ * different from 0xff is maintained until overridden by a new posted
+ * request. An injected byte equal to 0xff is only maintined for the
+ * duration of the request and then replaced by data from the actual
+ * input port.
  */
+
 esp_err_t gigatron_post_input(uint8_t byte, uint8_t duration,
                               uint8_t *frame, int framelen,
                               TickType_t ticks_to_wait);
 
-  
+
 #ifdef __cplusplus
 }
 #endif
