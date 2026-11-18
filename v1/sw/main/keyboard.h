@@ -74,3 +74,14 @@ uint8_t keyboard_get_modifiers(const keyboard_t *kb);
  * Returns a pointer to an internal array; *count receives the
  * number of valid entries.  Valid until the next process_report. */
 const uint8_t *keyboard_get_pressed_keys(const keyboard_t *kb, int *count);
+
+/* ── keymap metadata, for the help screen ─────────────────────────── */
+
+/* Number of keymaps (Ctrl+Alt+F1..F<nrKeymaps> selects them). */
+int keyboard_nr_keymaps(void);
+
+/* Display name of keymap i, or "?" when out of range. */
+const char *keyboard_keymap_name(int i);
+
+/* Keymap saved in NVS for this keyboard, or -1 when none. */
+int keyboard_saved_keymap(const uint8_t *bda);

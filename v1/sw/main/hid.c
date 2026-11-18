@@ -1,6 +1,7 @@
 #include "hid.h"
 #include "gap.h"
 #include "hid_parser.h"
+#include "save.h"
 #include "esp_hidh.h"
 #include "esp_hid_common.h"
 #include "esp_log.h"
@@ -110,12 +111,15 @@ static int setup_decoder(connected_dev_t *cdev, esp_hidh_dev_t *dev)
     hid_dump_field_map(&cdev->field_map);
 
     /* Try keyboard first, then gamepad */
+    const uint8_t *bda = esp_hidh_dev_bda_get(dev);
     keyboard_t *kb = keyboard_create(&cdev->field_map,
                                      dev,
                                      s_kb_cb, s_kb_user_data);
     if (kb) {
         cdev->type = DEV_TYPE_KEYBOARD;
         cdev->decoder.keyboard = kb;
+        uint8_t kind = GAP_KIND_KEYBOARD;
+        nvs_save("TY", bda, &kind, 1);
         ESP_LOGI(TAG, "Created keyboard decoder");
         return 1;
     }
@@ -125,6 +129,8 @@ static int setup_decoder(connected_dev_t *cdev, esp_hidh_dev_t *dev)
     if (gp) {
         cdev->type = DEV_TYPE_GAMEPAD;
         cdev->decoder.gamepad = gp;
+        uint8_t kind = GAP_KIND_GAMEPAD;
+        nvs_save("TY", bda, &kind, 1);
         ESP_LOGI(TAG, "Created gamepad decoder");
         return 1;
     }

@@ -8,6 +8,8 @@
 
 #include "gigatron.h"
 #include "pluggy.h"
+#include "gap.h"
+#include "keyboard.h"
 
 #include "esp_log.h"
 #include "driver/rmt_rx.h"
@@ -80,7 +82,8 @@ typedef enum {
 
 typedef struct {
     pcmd_t cmd;
-    char arg[PLUGGY_PATH_MAX];
+    char arg[PLUGGY_PATH_MAX];   /* command argument: a string, or the
+                                  * 6-byte bda of the keyboard for CMD_HELP */
 } pmsg_t;
 
 
@@ -92,16 +95,19 @@ typedef struct {
  * keeps the directory state single-threaded.  The RX task only decodes
  * bytes and enqueues; it never blocks on the Gigatron. */
 
-static void post_pcmd(pcmd_t cmd, const char *arg)
+static void post_pcmd(pcmd_t cmd, const void *arg, int len)
 {
     if (! cmd_queue) {
         ESP_LOGE(TAG, "post_pcmd cmd=%d: queue not created", cmd);
         return;
     }
     pmsg_t m = { .cmd = cmd };
-    m.arg[0] = '\0';
-    if (arg)
-        strlcpy(m.arg, arg, sizeof m.arg);
+    if (arg && len > 0) {
+        if (len > (int)sizeof m.arg)
+            len = sizeof m.arg;
+        memcpy(m.arg, arg, len);
+    }
+    m.arg[sizeof m.arg - 1] = '\0';
     ESP_LOGI(TAG, "post cmd=%d arg='%s'", cmd, m.arg);
     if (xQueueSend(cmd_queue, &m, pdMS_TO_TICKS(10)) != pdTRUE)
         ESP_LOGW(TAG, "command queue full, dropped cmd %d", cmd);
@@ -217,7 +223,7 @@ void pluggy_rx_task(void *arg) {
         /* good bit */
         if (rmsg.bit >= 0)
             {
-                ESP_LOGI(TAG,"rx: bit %d inbit %02x frame %d", rmsg.bit, rx_inbit, rmsg.frame);
+                ESP_LOGD(TAG,"rx: bit %d inbit %02x frame %d", rmsg.bit, rx_inbit, rmsg.frame);
                 rx_frame = rmsg.frame;
                 if (rmsg.bit)
                     rx_byte |= rx_inbit;
@@ -236,88 +242,79 @@ void pluggy_rx_task(void *arg) {
 
 /* ── processing received bytes ───────────────────────────── */
 
-typedef enum { RX_IDLE = 0, RX_PROGRAM, RX_COMMAND } rx_state_t;
-static rx_state_t rx_state = RX_IDLE;
-static FILE      *rx_file = NULL;
-static int        rx_bytes = 0;
-static uint8_t    rx_cmd[PLUGGY_PATH_MAX];
-static int        rx_cmd_len = 0;
-
 /* This callback is invoked by the rx task for each received byte,
    and with argument -1 on timeout. We need to decide whether we're
    looking at browser commands or text to save into "saved.txt". */
-static void pluggy_rx_cb(int byte)
+static void pluggy_rx_cb(int b)
 {
-    if (byte < 0)
-        {                          /* timeout */
-            switch (rx_state) {
-            case RX_PROGRAM:        /* saved text */
+
+    typedef enum { RX_IDLE, RX_CMDARG, RX_TXT } rx_state_t;
+    static rx_state_t rx_state = RX_IDLE;
+    static FILE      *rx_file  = NULL;
+    static int        rx_bytes = 0;
+    static uint8_t    rx_cmd[PLUGGY_PATH_MAX];
+    static int        rx_cmd_len = 0;
+
+    if (b < 0)
+        {                       /* timeout */
+            if (rx_state == RX_CMDARG)
+                ESP_LOGW(TAG, "rx: unterminated command %d", rx_cmd[0]);
+            if (rx_file) {
+                ESP_LOGI(TAG, "rx: wrote %d bytes to %s", rx_bytes, PLUGGY_SAVED_FILE);
                 fclose(rx_file);
-                rx_file = NULL;
-                ESP_LOGI(TAG, "RX: saved %d bytes to %s", rx_bytes, PLUGGY_SAVED_FILE);
-                break;
-            case RX_COMMAND:        /* browser command argument */
-                ESP_LOGW(TAG, "RX: unterminated command (cmd=%d)", rx_cmd[0]);
-                break;
-            default:
-                ESP_LOGD(TAG, "RX: idle end-of-stream");
-                break;
             }
+            rx_file = NULL;
+            rx_bytes = 0;
             rx_state = RX_IDLE;
-            rx_cmd_len = 0;
             return;
         }
-    else
-        {
-            uint8_t b = (uint8_t)byte;
-            switch (rx_state) {
-            case RX_IDLE:
-                if (b >= 32) {  /* starting saved.txt */
-                    rx_file = fopen(PLUGGY_SAVED_FILE, "wb");
-                    if (!rx_file) {
-                        ESP_LOGE(TAG, "Cannot open %s for writing", PLUGGY_SAVED_FILE);
-                    } else {
-                        rx_state = RX_PROGRAM;
-                        rx_bytes = 0;
-                        ESP_LOGI(TAG, "RX: program mode, first byte 0x%02x", b);
-                        fputc(b, rx_file);
-                        rx_bytes++;
-                    }
-                } else if (b >= CMD_SD_LIST && b <= CMD_SD_INIT) { /* browser command */
-                    ESP_LOGI(TAG, "RX: command %d", b);
-                    rx_cmd[0] = b;
-                    rx_cmd_len = 1;
-                    if (b == CMD_SD_EXEC || b == CMD_SD_OPEN)
-                        rx_state = RX_COMMAND;          /* collect arg */
-                    else
-                        post_pcmd((pcmd_t)(b), NULL);   /* post command */
-                } else
-                    ESP_LOGI(TAG, "RX: byte 0x%02x ignored (state=IDLE)", b);
-                break;
-            case RX_PROGRAM:
-                if (fputc(b, rx_file) == EOF) {
-                    ESP_LOGE(TAG, "Write error at %zu bytes, aborting recording", rx_bytes);
-                    fclose(rx_file);
-                    rx_file = NULL;
-                    rx_state = RX_IDLE;
-                } else
-                    rx_bytes++;
-                break;
-            case RX_COMMAND:
-                if (b == 0) {   /* NUL terminator: dispatch */
-                    rx_cmd[rx_cmd_len++] = '\0';
-                    ESP_LOGI(TAG, "RX: command %d arg '%s'", rx_cmd[0], (char*)rx_cmd+1);
-                    post_pcmd(rx_cmd[0], (char *)rx_cmd + 1);
-                    rx_state = RX_IDLE;
-                    rx_cmd_len = 0;
-                } else if (b >= 32 && b < 127 && rx_cmd_len < sizeof rx_cmd - 2) {
-                    rx_cmd[rx_cmd_len++] = b;
-                } else
-                    ESP_LOGD(TAG, "RX: command byte %02x dropped (len=%d)", b, rx_cmd_len);
-                break;
-            }
+    if (rx_state == RX_CMDARG)
+        {                       /* command argument */
+            if (b >= 32 && b < 127 && rx_cmd_len < PLUGGY_PATH_MAX-1 ) {
+                rx_cmd[rx_cmd_len++] = b;
+                rx_cmd[rx_cmd_len] = 0;
+            } else if (b == 0) {
+                post_pcmd(rx_cmd[0], (char *)rx_cmd + 1, rx_cmd_len);
+                ESP_LOGI(TAG, "rx: browser command %d arg '%s'", rx_cmd[0], (char*)rx_cmd+1);
+                rx_state = RX_IDLE;
+            } else
+                ESP_LOGI(TAG, "rx: dropped byte %02x in command %d", b, rx_cmd[0]);
+            return;
         }
+    if (b == CMD_SD_EXEC || b == CMD_SD_OPEN)
+        {                       /* command with argument */
+            rx_cmd[0] = b;
+            rx_cmd[1] = 0;
+            rx_cmd_len = 1;
+            rx_state = RX_CMDARG;
+            return;
+        }
+    if (b >= CMD_SD_LIST && b <= CMD_SD_INIT)
+        {                       /* command without argument */
+            post_pcmd(b, NULL, 0);
+            ESP_LOGI(TAG, "rx: browser command %d", b);
+            rx_state = RX_IDLE;
+            return;
+        }
+    if (rx_state == RX_TXT || b >= 32)
+        {                       /* saved text */
+            if (! rx_file)
+                rx_file = fopen(PLUGGY_SAVED_FILE, "wb");
+            if (rx_file)
+                fputc(b, rx_file);
+            if (!rx_file || ferror(rx_file)) {
+                ESP_LOGE(TAG, "rx: cannot write to %s", PLUGGY_SAVED_FILE);
+                gigatron_post_input(0x03, 10, 0, 0, portMAX_DELAY); 
+                gigatron_post_input(0xff, 2, 0, 0, portMAX_DELAY);
+                return;
+            }
+            rx_bytes += 1;
+            rx_state = RX_TXT;
+        }
+    ESP_LOGI(TAG, "rx: received lose byte %02x", b);
 }
+
+
 
 /* ── gt1 loader protocol (Ctrl+F2..F10) ────────────────── */
 
@@ -738,7 +735,7 @@ static esp_err_t help_render_string(uint16_t pos, const char *text)
                 row[x++] = 0;                /* shifted down for g j p q y */
                 row[x++] = (pixels >> 10) & 31;
                 row[x++] = (pixels >> 5)  & 31;
-                row[x++] =  pixels         & 31;
+                row[x++] =  pixels        & 31;
                 if (text[i] == 'j')          /* special case to dot the j */
                     row[x-1] = '.';
             }
@@ -753,48 +750,128 @@ static esp_err_t help_render_string(uint16_t pos, const char *text)
     return ESP_OK;
 }
 
-/* Render a text line and advance pos to the start of the next one. */
-static esp_err_t help_render_line(uint16_t *pos, const char *text)
+typedef enum {
+    HELPPAGE_LOAD,
+    HELPPAGE_BT,
+    HELPPAGE_KEYMAP
+} helppage_t;
+
+/* Text cursor over a help page.  width[i] remembers how many characters
+ * the previous page wrote on line i, so help_line() can pad the new text
+ * and erase the leftover pixels.  Lines beyond HELP_LINES are counted
+ * but not rendered. */
+
+typedef struct {
+    int line;
+    int width[HELP_LINES];
+} help_screen_t;
+
+static void help_line(help_screen_t *s, const char *text)
 {
-    esp_err_t err = help_render_string(*pos, text);
-    if (err != ESP_OK)
-        return err;
-    *pos = (*pos & 0xff00) + 0x600;          /* 6 rows down, same page */
-    return ESP_OK;
+    char padded[HELP_MAX_CHARS + 1];
+    if (text && text[0])
+        ESP_LOGI(TAG, "help: %s", text);
+    if (s->line < HELP_LINES) {
+        int n = strlen(text);
+        if (n > HELP_MAX_CHARS)
+            n = HELP_MAX_CHARS;
+        int w = s->width[s->line];
+        if (n < w) {
+            memcpy(padded, text, n);
+            memset(padded + n, ' ', w - n);
+            padded[w] = '\0';
+            text = padded;
+            n = w;
+        }
+        help_render_string(0x800 + s->line * 0x600, text);
+        s->width[s->line] = n;
+    }
+    s->line++;
 }
 
-static void pluggy_help_screen(void)
+static void help_page_end(help_screen_t *s)
 {
-    uint16_t pos = 0x800;
-    int line = 0;
+    while (s->line < HELP_LINES)
+        help_line(s, "");
+}
+
+static void help_page_load(help_screen_t *s)
+{
     char text[HELP_MAX_CHARS + 1];
-
-    /* post dummy frame to resynchronize checksums */
-    gigatron_post_input(0xff, 2, 0, 0, pdMS_TO_TICKS(10));
-
-    if (line < HELP_LINES) {
-        help_render_line(&pos, "Ctrl-F1  This help");
-        line++;
-    }
+    help_line(s, "Ctrl-F1  Cycle help pages");
     for (int i = 1; i <= PLUGGY_GT1_MAX_FILES; i++) {
         char *name = pluggy_nth_gt1(i);
         if (! name)
             break;
-        ESP_LOGI(TAG, "Ctrl+F%-2d  %s", i + 1, name);
-        if (line >= HELP_LINES)
-            continue;
         /* snprintf copies the name: it lives in readdir's static dirent */
         snprintf(text, sizeof text, "Ctrl-F%-2d %s", i + 1, name);
-        help_render_line(&pos, text);
-        line++;
+        help_line(s, text);
     }
     if (FILE *f = fopen(PLUGGY_SAVED_FILE, "rb")) {
         fclose(f);
-        ESP_LOGI(TAG, "Ctrl+F12  -SAVED-");
-        if (line < HELP_LINES) {
-            help_render_line(&pos, "Ctrl-F12 -SAVED-");
-            line++;
-        }
+        help_line(s, "Ctrl-F12 -SAVED-");
+    }
+    help_page_end(s);
+}
+
+static void help_page_bt(help_screen_t *s)
+{
+    static gap_device_info_t devs[HELP_LINES - 2]; /* worker stack is 4K */
+    char text[HELP_MAX_CHARS + 1];
+    int n = gap_list_devices(devs, HELP_LINES - 2);
+    help_line(s, "[Bluetooth devices]");
+    for (int i = 0; i < n; i++) {
+        const gap_device_info_t *d = &devs[i];
+        char kind = d->kind == GAP_KIND_KEYBOARD ? 'K' :
+                    d->kind == GAP_KIND_GAMEPAD  ? 'G' : '?';
+        char xport = d->ble ? 'l' : 'b';
+        snprintf(text, sizeof text, "%c%c%c %s",
+                 d->connected ? '*' : ' ', kind, xport, d->name);
+        help_line(s, text);
+    }
+    help_line(s, "[Ctrl+F1 for next page]");
+    help_page_end(s);
+}
+
+static void help_page_keymap(help_screen_t *s, const uint8_t *bda)
+{
+    char text[HELP_MAX_CHARS + 1];
+    char name[64];
+    gap_device_name(bda, name, sizeof name);
+    snprintf(text, sizeof text, "[Keymap for %.27s]", name);
+    help_line(s, text);
+    int active = keyboard_saved_keymap(bda);
+    for (int i = 0; i < keyboard_nr_keymaps(); i++) {
+        snprintf(text, sizeof text, "Ctrl-Alt-F%d %c %s",
+                 i + 1, i == active ? '*' : ' ', keyboard_keymap_name(i));
+        help_line(s, text);
+    }
+    help_line(s, "[Ctrl+F1 for next page]");
+    help_page_end(s);
+}
+
+static void pluggy_help_screen(const uint8_t *bda)
+{
+    static helppage_t page = HELPPAGE_LOAD;
+    static help_screen_t s;
+    s.line = 0;
+
+    /* post dummy frame to resynchronize checksums */
+    gigatron_post_input(0xff, 2, 0, 0, pdMS_TO_TICKS(10));
+    switch(page) {
+    default:
+    case HELPPAGE_LOAD:
+        help_page_load(&s);
+        page = HELPPAGE_KEYMAP;
+        break;
+    case HELPPAGE_KEYMAP:
+        help_page_keymap(&s, bda);
+        page = HELPPAGE_BT;
+        break;
+    case HELPPAGE_BT:
+        help_page_bt(&s);
+        page = HELPPAGE_LOAD;
+        break;
     }
 }
 
@@ -803,33 +880,31 @@ static void pluggy_help_screen(void)
 
 /* This is called from keyboard.c */
 
-void pluggy_handle_ctrl_fn(int fn)
+void pluggy_handle_ctrl_fn(int fn, const uint8_t *bda)
 {
     if (uxQueueMessagesWaiting(cmd_queue)) {
         ESP_LOGE(TAG, "command queue is not empty. skipping.");
         return;
     }
     if (fn == 1) {
-        /* Ctrl+F1: list the available programs on the Loader screen */
-        post_pcmd(CMD_HELP, NULL);
+        /* Ctrl+F1: cycle the help pages on the Loader screen */
+        post_pcmd(CMD_HELP, bda, 6);
     } else if (fn >= 2 && fn <= 11) {
         /* Ctrl+F2..F11: load the n-th gt1 file from the FAT partition */
         char *path = pluggy_nth_gt1(fn - 1);
         if (path)
-            post_pcmd(CMD_LOAD_GT1, path);
+            post_pcmd(CMD_LOAD_GT1, path, strlen(path) + 1);
         else
             ESP_LOGW(TAG, "No gt1 file #%d in %s", fn - 1, PLUGGY_PROGRAMS_PATH);
     } else if (fn == 12) {
         /* Ctrl+F12: replay the recorded program */
-        post_pcmd(CMD_REPLAY, PLUGGY_SAVED_FILE);
+        post_pcmd(CMD_REPLAY, PLUGGY_SAVED_FILE, strlen(PLUGGY_SAVED_FILE) + 1);
     }
 }
 
 
 
 /* ── command task ──────────────────────────────────────────── */
-
-static void pluggy_help_screen(void);
 
 static void pluggy_worker_task(void *arg)
 {
@@ -840,7 +915,7 @@ static void pluggy_worker_task(void *arg)
         switch (m.cmd) {
         case CMD_HELP:
             ESP_LOGI(TAG, "worker: HELP");
-            pluggy_help_screen();
+            pluggy_help_screen((const uint8_t *)m.arg);
             break;
         case CMD_LOAD_GT1: {
             ESP_LOGI(TAG, "worker: LOAD_GT1 %s", m.arg);

@@ -30,5 +30,27 @@ bool gap_is_pairing_active(void);
 /* Number of bonded devices (BT Classic + BLE combined). */
 int gap_get_bonded_count(void);
 
+/* Device kind, as saved in NVS by the hid layer. */
+#define GAP_KIND_UNKNOWN    0
+#define GAP_KIND_KEYBOARD   1
+#define GAP_KIND_GAMEPAD    2
+
+/* Info about a bonded device, for status display. */
+typedef struct {
+    uint8_t bda[6];
+    bool    ble;        /* false = BT Classic */
+    bool    connected;
+    uint8_t kind;       /* GAP_KIND_* */
+    char    name[64];   /* empty when never saved */
+} gap_device_info_t;
+
+/* Fill list with bonded devices (BT Classic first, then BLE).
+ * Returns the number of entries written, at most max. */
+int gap_list_devices(gap_device_info_t *list, int max);
+
+/* Copy the saved name of a device into name (size bytes),
+ * or its bda when no name was saved. */
+void gap_device_name(const uint8_t *bda, char *name, int size);
+
 /* Remove all bonded devices. */
 esp_err_t gap_clear_all_bonds(void);

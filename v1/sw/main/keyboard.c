@@ -158,6 +158,30 @@ void keyboard_destroy(keyboard_t *kb)
 
 /* ── keymaps ───────────────────────────────────────────────── */
 
+/* Names of the keymaps, in the order of the US..ES flags in keymap.h. */
+static const char *const keymap_names[nrKeymaps] =
+    { "US", "GB", "DE", "FR", "IT", "ES" };
+
+int keyboard_nr_keymaps(void)
+{
+    return nrKeymaps;
+}
+
+const char *keyboard_keymap_name(int i)
+{
+    return (i >= 0 && i < nrKeymaps) ? keymap_names[i] : "?";
+}
+
+int keyboard_saved_keymap(const uint8_t *bda)
+{
+    uint8_t keymap;
+    if (! bda)
+        return -1;
+    if (nvs_load("KB", bda, &keymap, 1) != ESP_OK)
+        keymap = 0;
+    return keymap;
+}
+
 static int lookup(uint8_t mods, uint8_t code)
 {
     ESP_LOGD(TAG, "Keymap-to-ascii %02x %02x", mods, code);
@@ -229,7 +253,8 @@ void process_giga_keys(keyboard_t *kb,
             }
 #endif
             if (ctrl && !alt && ev->type == KB_KEY_DOWN)
-                pluggy_handle_ctrl_fn(ascii - 192);  // F1->1 ... F12->12
+                pluggy_handle_ctrl_fn(ascii - 192,
+                                      esp_hidh_dev_bda_get(dev));  // F1->1 ... F12->12
             ascii = -1;
         } else {
             // Caps lock 

@@ -103,6 +103,17 @@ static void clear_scan_results(void)
     s_scan_result_count = 0;
 }
 
+/* ── device name persistence ───────────────────────────────────────── */
+
+static void save_device_name(const uint8_t *bda, const char *name)
+{
+    char buf[64] = "";
+    if (name && name[0]) {
+        strlcpy(buf, name, sizeof buf);
+        nvs_save("NM", bda, buf, sizeof buf);
+    }
+}
+
 /* ── bond check helpers ────────────────────────────────────────────── */
 
 #if CONFIG_BT_HID_HOST_ENABLED
@@ -277,6 +288,8 @@ static void bt_gap_event_handler(esp_bt_gap_cb_event_t event,
     case ESP_BT_GAP_AUTH_CMPL_EVT:
         if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
             ESP_LOGI(TAG, "BT auth success: %s", param->auth_cmpl.device_name);
+            save_device_name(param->auth_cmpl.bda,
+                             (const char *)param->auth_cmpl.device_name);
         } else {
             ESP_LOGE(TAG, "BT auth failed: 0x%x", param->auth_cmpl.stat);
         }
@@ -402,6 +415,9 @@ static void ble_gap_event_handler(esp_gap_ble_cb_event_t event,
     case ESP_GAP_BLE_AUTH_CMPL_EVT:
         if (param->ble_security.auth_cmpl.success) {
             ESP_LOGI(TAG, "BLE auth success");
+            scan_result_t *r = find_scan_result(param->ble_security.auth_cmpl.bd_addr);
+            save_device_name(param->ble_security.auth_cmpl.bd_addr,
+                             r ? r->name : NULL);
         } else {
             ESP_LOGE(TAG, "BLE auth failed: 0x%x",
                      param->ble_security.auth_cmpl.fail_reason);
@@ -668,10 +684,10 @@ esp_err_t gap_stop_pairing(void)
         esp_ble_gap_stop_scanning();
 #endif
         ESP_LOGI(TAG, ">>> PAIRING MODE ENDED <<<");
-        if (s_event_cb)
-            s_event_cb(GAP_EVT_PAIRING_END, NULL);
     }
     s_state = S_IDLE;
+    if (s_event_cb)
+        s_event_cb(GAP_EVT_PAIRING_END, NULL);
     return ESP_OK;
 }
 
@@ -692,6 +708,62 @@ int gap_get_bonded_count(void)
     if (ble > 0) count += ble;
 #endif
     return count;
+}
+
+/* Copy the saved name of a device into name (size bytes),
+ * or its bda when no name was saved. */
+void gap_device_name(const uint8_t *bda, char *name, int size)
+{
+    char buf[64] = "";
+    if (nvs_load("NM", bda, buf, sizeof buf) == ESP_OK && buf[0])
+        strlcpy(name, buf, size);
+    else
+        snprintf(name, size, "%02x:%02x:%02x:%02x:%02x:%02x",
+                 bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+}
+
+static void fill_device(gap_device_info_t *d, const uint8_t *bda, bool ble)
+{
+    memcpy(d->bda, bda, 6);
+    d->ble = ble;
+    d->connected = hid_is_device_connected(bda);
+    gap_device_name(bda, d->name, sizeof d->name);
+    if (nvs_load("TY", bda, &d->kind, 1) != ESP_OK)
+        d->kind = GAP_KIND_UNKNOWN;
+}
+
+int gap_list_devices(gap_device_info_t *list, int max)
+{
+    int n = 0;
+#if CONFIG_BT_HID_HOST_ENABLED
+    {
+        int count = esp_bt_gap_get_bond_device_num();
+        if (count > 0) {
+            esp_bd_addr_t *addrs = malloc(count * sizeof(esp_bd_addr_t));
+            if (addrs) {
+                esp_bt_gap_get_bond_device_list(&count, addrs);
+                for (int i = 0; i < count && n < max; i++)
+                    fill_device(&list[n++], addrs[i], false);
+                free(addrs);
+            }
+        }
+    }
+#endif
+#if CONFIG_BT_BLE_ENABLED
+    {
+        int count = esp_ble_get_bond_device_num();
+        if (count > 0) {
+            esp_ble_bond_dev_t *addrs = malloc(count * sizeof(esp_ble_bond_dev_t));
+            if (addrs) {
+                esp_ble_get_bond_device_list(&count, addrs);
+                for (int i = 0; i < count && n < max; i++)
+                    fill_device(&list[n++], addrs[i].bd_addr, true);
+                free(addrs);
+            }
+        }
+    }
+#endif
+    return n;
 }
 
 esp_err_t gap_clear_all_bonds(void)

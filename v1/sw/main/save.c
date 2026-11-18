@@ -10,6 +10,7 @@
 
 #define TAG "save"
 
+
 static void bda_to_key(const char *key, const uint8_t *bda, char *fullkey)
 {
     snprintf(fullkey, 32, "%s_%02X%02X%02X%02X%02X%02X", key,
@@ -33,7 +34,7 @@ esp_err_t nvs_save(const char *key, const uint8_t *bda, const void *data, size_t
     if (err == ESP_OK)
         ESP_LOGI(TAG, "Saved %d bytes of nvs data for %s", len, fullkey);
     else
-        ESP_LOGE(TAG, "Failed to save %d bytes of nvs data for %s", len, fullkey);
+        ESP_LOGE(TAG, "Failed to save %d bytes of nvs data for %s (err=%d)", len, fullkey, err);
     return err;
 }
 
